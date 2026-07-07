@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "aqua_version": "v2.59.2",
+  "aqua_config": "aqua.yaml",
+  "aqua_root": ".dv/aqua",
+  "bootstrap_cache": ".dv/bootstrap",
+  "tracked_files": [
+    "aqua.yaml",
+    "aqua-checksums.json",
+    "pyproject.toml",
+    "uv.lock"
+  ],
+  "post_install": [
+    {
+      "name": "Python environment",
+      "command": [
+        "uv",
+        "sync",
+        "--locked"
+      ]
+    }
+  ],
+  "app": {
+    "command": [
+      "uv",
+      "run",
+      "dv"
+    ]
+  }
+}
