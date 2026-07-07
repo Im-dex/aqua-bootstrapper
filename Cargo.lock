@@ -132,6 +132,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "flate2",
+ "glob",
  "hex",
  "reqwest 0.13.1",
  "serde",

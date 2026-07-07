@@ -119,10 +119,7 @@ impl Bootstrapper {
 
         let state_task = tokio::task::spawn_blocking(move || state::read(&cache));
         let tracked_task = tokio::task::spawn_blocking(move || {
-            tracked_paths
-                .iter()
-                .map(|path| fingerprint::fingerprint_tracked(&root, path))
-                .collect::<Result<Vec<_>>>()
+            fingerprint::fingerprint_tracked_patterns(&root, &tracked_paths)
         });
         let executable_task =
             tokio::task::spawn_blocking(move || fingerprint::executable_exists(&aqua_executable));

@@ -40,7 +40,8 @@ Aqua itself, so callers can use `AQUA_EXE` without repeating `--root-dir` or
     "aqua.yaml",
     "aqua-checksums.json",
     "pyproject.toml",
-    "uv.lock"
+    "uv.lock",
+    "config/**/*.toml"
   ],
   "post_install": [
     {
@@ -78,5 +79,10 @@ Only metadata fingerprints are tracked:
 
 - file size
 - modification time in nanoseconds since Unix epoch
+
+`tracked_files` entries are relative to the bootstrap config directory and may
+use glob patterns such as `config/**/*.toml`. Glob patterns must match at least
+one file. Matched files are sorted and deduplicated before they are stored in
+state.
 
 Content hashes are intentionally not used for fast-path invalidation.
