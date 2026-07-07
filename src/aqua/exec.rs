@@ -13,8 +13,10 @@ pub fn install_args(config: &Path, root: &Path) -> Vec<String> {
     ]
 }
 
-pub fn exec_args(root: &Path, command: &[String]) -> Vec<String> {
+pub fn exec_args(config: &Path, root: &Path, command: &[String]) -> Vec<String> {
     let mut args = vec![
+        "--config".to_string(),
+        config.display().to_string(),
         "--root-dir".to_string(),
         root.display().to_string(),
         "exec".to_string(),
@@ -35,8 +37,9 @@ pub async fn run_exec(
     name: &str,
     aqua: &Path,
     aqua_root: &Path,
+    aqua_config: &Path,
     command: &[String],
 ) -> Result<i32> {
-    let args = exec_args(aqua_root, command);
+    let args = exec_args(aqua_config, aqua_root, command);
     process::run_app(name, aqua, &args).await
 }

@@ -2,6 +2,7 @@ use std::path::Path;
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+use reqwest::Client;
 use serde_json::Value;
 
 use crate::aqua::{OWNER, REPO};
@@ -86,7 +87,8 @@ async fn fetch_slsa_statements(sha256_hex: &str) -> Result<Vec<Value>> {
         "https://api.github.com/orgs/{OWNER}/attestations/sha256:{sha256_hex}?per_page=30&predicate_type=provenance"
     );
 
-    let response = reqwest::Client::new()
+    let client = Client::new();
+    let response = client
         .get(&url)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2026-03-10")
@@ -105,6 +107,11 @@ async fn fetch_slsa_statements(sha256_hex: &str) -> Result<Vec<Value>> {
     let mut statements = Vec::new();
     collect_dsse_payloads(&response, &mut statements);
 
+    for bundle_url in collect_bundle_urls(&response) {
+        let bundle = fetch_attestation_bundle(&client, &bundle_url).await?;
+        collect_dsse_payloads(&bundle, &mut statements);
+    }
+
     if statements.is_empty() {
         return Err(Error::Attestation(format!(
             "no SLSA payloads found for sha256:{sha256_hex}"
@@ -112,6 +119,36 @@ async fn fetch_slsa_statements(sha256_hex: &str) -> Result<Vec<Value>> {
     }
 
     Ok(statements)
+}
+
+async fn fetch_attestation_bundle(client: &Client, bundle_url: &str) -> Result<Value> {
+    let url = reqwest::Url::parse(bundle_url).map_err(|error| {
+        Error::Attestation(format!(
+            "invalid GitHub attestation bundle_url {bundle_url}: {error}"
+        ))
+    })?;
+
+    if url.scheme() != "https" {
+        return Err(Error::Attestation(format!(
+            "GitHub attestation bundle_url must use https: {bundle_url}"
+        )));
+    }
+
+    let response = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "aqua-bootstrapper")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(Error::Attestation(format!(
+            "GitHub attestation bundle_url returned {}",
+            response.status()
+        )));
+    }
+
+    Ok(response.json().await?)
 }
 
 fn inspect_slsa_statement(
@@ -152,6 +189,34 @@ fn inspect_slsa_statement(
     );
 
     Ok(())
+}
+
+fn collect_bundle_urls(value: &Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    collect_bundle_urls_inner(value, &mut urls);
+    urls
+}
+
+fn collect_bundle_urls_inner(value: &Value, urls: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(bundle_url) = object.get("bundle_url").and_then(Value::as_str)
+                && !urls.iter().any(|url| url == bundle_url)
+            {
+                urls.push(bundle_url.to_string());
+            }
+
+            for child in object.values() {
+                collect_bundle_urls_inner(child, urls);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_bundle_urls_inner(item, urls);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_dsse_payloads(value: &Value, statements: &mut Vec<Value>) {
@@ -210,5 +275,35 @@ fn json_contains_string(value: &Value, expected: &str) -> bool {
             .values()
             .any(|child| json_contains_string(child, expected)),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn collect_bundle_urls_finds_nested_urls_once() {
+        let response = json!({
+            "attestations": [
+                { "bundle_url": "https://example.test/bundle-1.json" },
+                {
+                    "nested": {
+                        "bundle_url": "https://example.test/bundle-2.json"
+                    }
+                },
+                { "bundle_url": "https://example.test/bundle-1.json" }
+            ]
+        });
+
+        assert_eq!(
+            collect_bundle_urls(&response),
+            vec![
+                "https://example.test/bundle-1.json".to_string(),
+                "https://example.test/bundle-2.json".to_string(),
+            ]
+        );
     }
 }
