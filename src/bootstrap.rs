@@ -34,27 +34,27 @@ impl Bootstrapper {
     }
 
     pub async fn run(&self) -> Result<i32> {
-        let snapshot = self.snapshot().await?;
-        if self.is_valid(&snapshot) {
-            debug!("bootstrap fast path hit");
-            return self.launch_app().await;
-        }
+        loop {
+            let lock = self.acquire_shared_lock().await?;
+            debug!(path = %lock.path().display(), "bootstrap shared lock acquired");
 
-        info!("bootstrap cache miss; acquiring lock");
-        let cache = self.bootstrap_cache();
-        let lock = tokio::task::spawn_blocking(move || BootstrapLock::acquire(&cache)).await??;
-        debug!(path = %lock.path().display(), "bootstrap lock acquired");
-
-        let snapshot = self.snapshot().await?;
-        if self.is_valid(&snapshot) {
+            let snapshot = self.snapshot().await?;
+            if self.is_valid(&snapshot) {
+                debug!("bootstrap fast path hit");
+                return self.launch_app().await;
+            }
             drop(lock);
-            return self.launch_app().await;
+
+            info!("bootstrap cache miss; acquiring exclusive lock");
+            let lock = self.acquire_exclusive_lock().await?;
+            debug!(path = %lock.path().display(), "bootstrap exclusive lock acquired");
+
+            let snapshot = self.snapshot().await?;
+            if !self.is_valid(&snapshot) {
+                self.bootstrap(snapshot.tracked_files).await?;
+            }
+            drop(lock);
         }
-
-        self.bootstrap(snapshot.tracked_files).await?;
-        drop(lock);
-
-        self.launch_app().await
     }
 
     async fn bootstrap(&self, tracked_files: Vec<FileFingerprint>) -> Result<()> {
@@ -71,8 +71,11 @@ impl Bootstrapper {
         aqua::exec::run_install(&aqua_executable, &self.aqua_config(), &aqua_root).await?;
 
         for command in &self.config.post_install {
-            let args = aqua::exec::exec_args(&self.aqua_config(), &aqua_root, &command.command);
-            crate::process::run_foreground(&command.name, &aqua_executable, &args).await?;
+            let aqua_config = self.aqua_config();
+            let args = aqua::exec::exec_args(&command.command);
+            let envs = aqua::exec::aqua_envs(&aqua_executable, &aqua_config, &aqua_root);
+            crate::process::run_foreground(&command.name, &aqua_executable, &args, Some(&envs))
+                .await?;
         }
 
         let state = BootstrapState::new(
@@ -96,6 +99,16 @@ impl Bootstrapper {
             &self.config.app.command,
         )
         .await
+    }
+
+    async fn acquire_shared_lock(&self) -> Result<BootstrapLock> {
+        let cache = self.bootstrap_cache();
+        tokio::task::spawn_blocking(move || BootstrapLock::acquire_shared(&cache)).await?
+    }
+
+    async fn acquire_exclusive_lock(&self) -> Result<BootstrapLock> {
+        let cache = self.bootstrap_cache();
+        tokio::task::spawn_blocking(move || BootstrapLock::acquire_exclusive(&cache)).await?
     }
 
     async fn snapshot(&self) -> Result<Snapshot> {

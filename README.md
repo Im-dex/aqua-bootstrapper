@@ -14,6 +14,19 @@ If `--config` is omitted, `bootstrap.json` in the current directory is used.
 
 The application exit code is returned unchanged.
 
+## Application environment
+
+The launched application receives the Aqua paths used by the bootstrapper:
+
+- `AQUA_EXE`: path to the managed Aqua executable
+- `AQUA_ROOT_DIR`: path to the managed Aqua root directory
+- `AQUA_CONFIG`: path to the Aqua config file
+
+Use these variables when the application needs to call tools through the same
+Aqua installation and config. `AQUA_ROOT_DIR` and `AQUA_CONFIG` are also read by
+Aqua itself, so callers can use `AQUA_EXE` without repeating `--root-dir` or
+`--config`.
+
 ## Configuration
 
 ```json

@@ -11,7 +11,15 @@ pub struct BootstrapLock {
 }
 
 impl BootstrapLock {
-    pub fn acquire(cache: &Path) -> Result<Self> {
+    pub fn acquire_exclusive(cache: &Path) -> Result<Self> {
+        Self::acquire(cache, LockMode::Exclusive)
+    }
+
+    pub fn acquire_shared(cache: &Path) -> Result<Self> {
+        Self::acquire(cache, LockMode::Shared)
+    }
+
+    fn acquire(cache: &Path, mode: LockMode) -> Result<Self> {
         fs::create_dir_all(cache)?;
         let path = cache.join(LOCK_FILE);
         let file = OpenOptions::new()
@@ -20,13 +28,22 @@ impl BootstrapLock {
             .read(true)
             .write(true)
             .open(&path)?;
-        file.lock()?;
+        match mode {
+            LockMode::Exclusive => file.lock()?,
+            LockMode::Shared => file.lock_shared()?,
+        }
         Ok(Self { file, path })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LockMode {
+    Exclusive,
+    Shared,
 }
 
 impl Drop for BootstrapLock {

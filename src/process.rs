@@ -5,13 +5,21 @@ use tokio::process::Command;
 
 use crate::error::{Error, Result};
 
-pub async fn run_foreground(name: &str, executable: &Path, args: &[String]) -> Result<i32> {
+pub async fn run_foreground(
+    name: &str,
+    executable: &Path,
+    args: &[String],
+    envs: Option<&[(String, String)]>,
+) -> Result<i32> {
     let mut command = Command::new(executable);
     command
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(envs) = envs {
+        command.envs(envs.iter().map(|(key, value)| (key, value)));
+    }
 
     let status = command.status().await?;
     match status.code() {
@@ -26,13 +34,21 @@ pub async fn run_foreground(name: &str, executable: &Path, args: &[String]) -> R
     }
 }
 
-pub async fn run_app(name: &str, executable: &Path, args: &[String]) -> Result<i32> {
+pub async fn run_app(
+    name: &str,
+    executable: &Path,
+    args: &[String],
+    envs: Option<&[(String, String)]>,
+) -> Result<i32> {
     let mut command = Command::new(executable);
     command
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(envs) = envs {
+        command.envs(envs.iter().map(|(key, value)| (key, value)));
+    }
 
     let status = command.status().await?;
     match status.code() {
