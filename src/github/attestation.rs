@@ -5,6 +5,7 @@ use sigstore_verification::{Attestation, AttestationClient, FetchParams};
 
 use crate::aqua::{OWNER, REPO};
 use crate::error::{Error, Result};
+use crate::util::progress::{self, Progress};
 
 const GITHUB_ACTIONS_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 const SLSA_PROVENANCE_V1: &str = "https://slsa.dev/provenance/v1";
@@ -35,20 +36,33 @@ async fn verify_slsa_policy(artifact_path: &Path, version: &str, sha256_hex: &st
         )));
     }
 
+    progress::step(format!(
+        "Fetching Aqua GitHub attestations for sha256:{}...",
+        short_digest(sha256_hex)
+    ));
     let attestations = fetch_aqua_attestations(sha256_hex).await?;
     if attestations.is_empty() {
         return Err(Error::Attestation(format!(
             "no GitHub attestations found for sha256:{sha256_hex}"
         )));
     }
+    progress::step(format!(
+        "Fetched {} Aqua GitHub attestation(s)",
+        attestations.len()
+    ));
 
     let mut failures = Vec::new();
+    let mut progress = Progress::new(
+        "Checking Aqua GitHub attestations",
+        Some(attestations.len() as u64),
+    );
 
     for (index, attestation) in attestations.iter().enumerate() {
         let statement = match slsa_statement_from_attestation(attestation) {
             Ok(statement) => statement,
             Err(error) => {
                 failures.push(format!("attestation #{index}: {error}"));
+                progress.advance(1);
                 continue;
             }
         };
@@ -64,6 +78,7 @@ async fn verify_slsa_policy(artifact_path: &Path, version: &str, sha256_hex: &st
             ],
         ) {
             failures.push(format!("attestation #{index}: {error}"));
+            progress.advance(1);
             continue;
         }
 
@@ -75,6 +90,8 @@ async fn verify_slsa_policy(artifact_path: &Path, version: &str, sha256_hex: &st
         .await
         {
             Ok(()) => {
+                progress.advance(1);
+                progress.finish("Verified Aqua SLSA provenance attestation");
                 tracing::debug!(
                     repository = %format!("{OWNER}/{REPO}"),
                     oidc_issuer = GITHUB_ACTIONS_OIDC_ISSUER,
@@ -84,7 +101,10 @@ async fn verify_slsa_policy(artifact_path: &Path, version: &str, sha256_hex: &st
                 );
                 return Ok(());
             }
-            Err(error) => failures.push(format!("attestation #{index}: {error}")),
+            Err(error) => {
+                failures.push(format!("attestation #{index}: {error}"));
+                progress.advance(1);
+            }
         }
     }
 
@@ -92,6 +112,10 @@ async fn verify_slsa_policy(artifact_path: &Path, version: &str, sha256_hex: &st
         "no verified SLSA provenance matched Aqua policy; failures: {}",
         failures.join("; ")
     )))
+}
+
+fn short_digest(sha256_hex: &str) -> &str {
+    sha256_hex.get(..12).unwrap_or(sha256_hex)
 }
 
 async fn fetch_aqua_attestations(sha256_hex: &str) -> Result<Vec<Attestation>> {

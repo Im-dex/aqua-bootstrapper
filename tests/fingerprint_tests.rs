@@ -39,23 +39,6 @@ fn expands_glob_patterns_recursively() {
 }
 
 #[test]
-fn expands_glob_patterns_with_canonicalized_root() {
-    let dir = tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("config/tools")).unwrap();
-    fs::write(dir.path().join("config/tools/aqua.yaml"), "").unwrap();
-
-    let canonical_root = dir.path().canonicalize().unwrap();
-    let fingerprints =
-        fingerprint_tracked_patterns(&canonical_root, &["config/**/*".into()]).unwrap();
-
-    assert_eq!(fingerprints.len(), 1);
-    assert_eq!(
-        fingerprints[0].path,
-        std::path::PathBuf::from("config/tools/aqua.yaml")
-    );
-}
-
-#[test]
 fn deduplicates_files_matched_by_multiple_patterns() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();

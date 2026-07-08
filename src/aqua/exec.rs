@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::process;
 
 pub fn install_args() -> Vec<String> {
-    vec!["install".to_string()]
+    vec!["install".to_string(), "--all".to_string()]
 }
 
 pub fn exec_args(command: &[String]) -> Vec<String> {
@@ -44,4 +44,22 @@ pub async fn run_exec(
     let mut envs = aqua_envs(aqua, aqua_config, aqua_root);
     envs.push(("AQUA_DISABLE_LAZY_INSTALL".to_string(), "true".to_string()));
     process::run_app(name, aqua, &args, Some(&envs)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{exec_args, install_args};
+
+    #[test]
+    fn install_args_install_all_configured_packages() {
+        assert_eq!(install_args(), ["install", "--all"]);
+    }
+
+    #[test]
+    fn exec_args_pass_command_after_separator() {
+        assert_eq!(
+            exec_args(&["uv".to_string(), "run".to_string(), "dv".to_string()]),
+            ["exec", "--", "uv", "run", "dv"]
+        );
+    }
 }

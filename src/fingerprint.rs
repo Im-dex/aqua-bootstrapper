@@ -63,8 +63,7 @@ fn expand_glob_pattern(
     pattern: &Path,
     fingerprints: &mut BTreeMap<PathBuf, FileFingerprint>,
 ) -> Result<()> {
-    let glob_root = glob_root(root)?;
-    let pattern_str = glob_pattern(&glob_root, pattern)?;
+    let pattern_str = glob_pattern(root, pattern)?;
 
     let mut matched_files = 0;
     for entry in glob(&pattern_str).map_err(|error| {
@@ -76,7 +75,7 @@ fn expand_glob_pattern(
                 pattern.display()
             ))
         })?;
-        let relative = absolute.strip_prefix(&glob_root).map_err(|error| {
+        let relative = absolute.strip_prefix(root).map_err(|error| {
             Error::InvalidConfig(format!(
                 "tracked_files glob matched path outside root: {} ({error})",
                 absolute.display()
@@ -109,24 +108,6 @@ fn expand_glob_pattern(
     }
 
     Ok(())
-}
-
-fn glob_root(root: &Path) -> Result<PathBuf> {
-    let root = root.to_str().ok_or_else(|| {
-        Error::InvalidConfig("tracked_files root path is not valid UTF-8".to_string())
-    })?;
-
-    #[cfg(windows)]
-    {
-        if let Some(root) = root.strip_prefix(r"\\?\UNC\") {
-            return Ok(PathBuf::from(format!(r"\\{root}")));
-        }
-        if let Some(root) = root.strip_prefix(r"\\?\") {
-            return Ok(PathBuf::from(root));
-        }
-    }
-
-    Ok(PathBuf::from(root))
 }
 
 fn glob_pattern(root: &Path, pattern: &Path) -> Result<String> {

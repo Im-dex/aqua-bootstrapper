@@ -9,6 +9,7 @@ mod process;
 mod state;
 mod util;
 
+use std::fs;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -39,13 +40,7 @@ async fn main() {
 
 async fn run() -> Result<i32> {
     let cli = Cli::parse();
-    let config_path =
-        cli.config
-            .canonicalize()
-            .map_err(|source| Error::BootstrapConfigInaccessible {
-                path: cli.config,
-                source,
-            })?;
+    let config_path = accessible_absolute_path(cli.config)?;
     let root = config_path
         .parent()
         .map(PathBuf::from)
@@ -53,6 +48,21 @@ async fn run() -> Result<i32> {
 
     let config = Config::read(&config_path)?;
     Bootstrapper::new(root, config).run().await
+}
+
+fn accessible_absolute_path(path: PathBuf) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    fs::metadata(&absolute).map_err(|source| Error::BootstrapConfigInaccessible {
+        path: absolute.clone(),
+        source,
+    })?;
+
+    Ok(absolute)
 }
 
 fn init_tracing() {
