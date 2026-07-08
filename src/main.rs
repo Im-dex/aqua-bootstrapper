@@ -24,6 +24,9 @@ use crate::error::{Error, Result};
 struct Cli {
     #[arg(short, long, default_value = "bootstrap.json")]
     config: PathBuf,
+
+    #[arg(last = true)]
+    app_args: Vec<String>,
 }
 
 #[tokio::main]
@@ -47,7 +50,7 @@ async fn run() -> Result<i32> {
         .unwrap_or_else(|| PathBuf::from("."));
 
     let config = Config::read(&config_path)?;
-    Bootstrapper::new(root, config).run().await
+    Bootstrapper::new(root, config, cli.app_args).run().await
 }
 
 fn accessible_absolute_path(path: PathBuf) -> Result<PathBuf> {
@@ -72,4 +75,26 @@ fn init_tracing() {
         .with_target(false)
         .without_time()
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cli_collects_app_args_after_separator() {
+        let cli = Cli::parse_from([
+            "aqua-bootstrapper",
+            "--config",
+            "custom.json",
+            "--",
+            "status",
+            "--verbose",
+        ]);
+
+        assert_eq!(cli.config, PathBuf::from("custom.json"));
+        assert_eq!(cli.app_args, ["status", "--verbose"]);
+    }
 }

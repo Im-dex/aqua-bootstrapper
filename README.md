@@ -12,6 +12,16 @@ aqua-bootstrapper --config bootstrap.json
 
 If `--config` is omitted, `bootstrap.json` in the current directory is used.
 
+Application arguments can be passed after `--`:
+
+```sh
+aqua-bootstrapper --config bootstrap.json -- status --verbose
+```
+
+These arguments are appended to `app.command` from the configuration. For
+example, with `app.command` set to `["uv", "run", "dv"]`, the command above
+runs `uv run dv status --verbose` through `aqua exec`.
+
 The application exit code is returned unchanged.
 
 ## Application environment

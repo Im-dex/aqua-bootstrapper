@@ -14,6 +14,7 @@ use crate::state::{self, BootstrapState};
 pub struct Bootstrapper {
     root: PathBuf,
     config: Config,
+    app_args: Vec<String>,
     client: Client,
 }
 
@@ -25,10 +26,11 @@ struct Snapshot {
 }
 
 impl Bootstrapper {
-    pub fn new(root: PathBuf, config: Config) -> Self {
+    pub fn new(root: PathBuf, config: Config, app_args: Vec<String>) -> Self {
         Self {
             root,
             config,
+            app_args,
             client: Client::new(),
         }
     }
@@ -91,12 +93,15 @@ impl Bootstrapper {
     }
 
     async fn launch_app(&self) -> Result<i32> {
+        let mut command = self.config.app.command.clone();
+        command.extend(self.app_args.iter().cloned());
+
         aqua::exec::run_exec(
             "application",
             &self.aqua_executable(),
             &self.aqua_root(),
             &self.aqua_config(),
-            &self.config.app.command,
+            &command,
         )
         .await
     }
