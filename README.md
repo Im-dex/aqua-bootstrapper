@@ -37,11 +37,9 @@ Aqua installation and config. `AQUA_ROOT_DIR` and `AQUA_CONFIG` are also read by
 Aqua itself, so callers can use `AQUA_EXE` without repeating `--root-dir` or
 `--config`.
 
-`post_install.command` and `app.command` support `${VAR}` substitutions in each
-argument. Values are read from the bootstrapper process environment plus the
-variables above. Bootstrapper-provided variables take precedence over external
-variables with the same name. Missing variables fail the bootstrap with an
-invalid configuration error.
+The configuration file supports `${VAR}` substitutions before JSON parsing.
+Values are read from the bootstrapper process environment. Missing variables
+fail the bootstrap with an invalid configuration error.
 
 ## Configuration
 
@@ -49,15 +47,15 @@ invalid configuration error.
 {
   "schema": 1,
   "aqua_version": "v2.59.2",
-  "aqua_config": "aqua.yaml",
-  "aqua_root": ".dv/aqua",
-  "bootstrap_cache": ".dv/bootstrap",
+  "aqua_config": "${PROJECT_ROOT}/aqua.yaml",
+  "aqua_root": "${PROJECT_ROOT}/.dv/aqua",
+  "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
   "tracked_files": [
-    "aqua.yaml",
-    "aqua-checksums.json",
-    "pyproject.toml",
-    "uv.lock",
-    "config/**/*.toml"
+    "${PROJECT_ROOT}/aqua.yaml",
+    "${PROJECT_ROOT}/aqua-checksums.json",
+    "${PROJECT_ROOT}/pyproject.toml",
+    "${PROJECT_ROOT}/uv.lock",
+    "${PROJECT_ROOT}/config/**/*.toml"
   ],
   "post_install": [
     {
@@ -70,6 +68,10 @@ invalid configuration error.
   }
 }
 ```
+
+After environment substitution, all path fields in the configuration must be
+absolute. On Windows, use escaped backslashes or forward slashes in JSON, for
+example `C:/work/project/.dv/aqua`.
 
 ## Security
 
@@ -96,8 +98,8 @@ Only metadata fingerprints are tracked:
 - file size
 - modification time in nanoseconds since Unix epoch
 
-`tracked_files` entries are relative to the bootstrap config directory and may
-use glob patterns such as `config/**/*.toml`. Glob patterns must match at least
+`tracked_files` entries must resolve to absolute paths and may use glob patterns
+such as `${PROJECT_ROOT}/config/**/*.toml`. Glob patterns must match at least
 one file. Matched files are sorted and deduplicated before they are stored in
 state.
 

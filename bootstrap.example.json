@@ -1,15 +1,15 @@
 {
   "schema": 1,
   "aqua_version": "v2.59.2",
-  "aqua_config": "aqua.yaml",
-  "aqua_root": ".dv/aqua",
-  "bootstrap_cache": ".dv/bootstrap",
+  "aqua_config": "${PROJECT_ROOT}/aqua.yaml",
+  "aqua_root": "${PROJECT_ROOT}/.dv/aqua",
+  "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
   "tracked_files": [
-    "aqua.yaml",
-    "aqua-checksums.json",
-    "pyproject.toml",
-    "uv.lock",
-    "config/**/*.toml"
+    "${PROJECT_ROOT}/aqua.yaml",
+    "${PROJECT_ROOT}/aqua-checksums.json",
+    "${PROJECT_ROOT}/pyproject.toml",
+    "${PROJECT_ROOT}/uv.lock",
+    "${PROJECT_ROOT}/config/**/*.toml"
   ],
   "post_install": [
     {

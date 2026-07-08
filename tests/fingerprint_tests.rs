@@ -6,9 +6,10 @@ use tempfile::tempdir;
 #[test]
 fn fingerprints_plain_tracked_files() {
     let dir = tempdir().unwrap();
-    fs::write(dir.path().join("aqua.yaml"), "registries: []").unwrap();
+    let aqua_config = dir.path().join("aqua.yaml");
+    fs::write(&aqua_config, "registries: []").unwrap();
 
-    let fingerprints = fingerprint_tracked_patterns(dir.path(), &["aqua.yaml".into()]).unwrap();
+    let fingerprints = fingerprint_tracked_patterns(dir.path(), &[aqua_config]).unwrap();
 
     assert_eq!(fingerprints.len(), 1);
     assert_eq!(fingerprints[0].path, std::path::PathBuf::from("aqua.yaml"));
@@ -23,7 +24,7 @@ fn expands_glob_patterns_recursively() {
     fs::write(dir.path().join("config/nested/ignored.txt"), "").unwrap();
 
     let fingerprints =
-        fingerprint_tracked_patterns(dir.path(), &["config/**/*.toml".into()]).unwrap();
+        fingerprint_tracked_patterns(dir.path(), &[dir.path().join("config/**/*.toml")]).unwrap();
     let paths = fingerprints
         .into_iter()
         .map(|fingerprint| fingerprint.path)
@@ -46,7 +47,10 @@ fn deduplicates_files_matched_by_multiple_patterns() {
 
     let fingerprints = fingerprint_tracked_patterns(
         dir.path(),
-        &["config/a.toml".into(), "config/**/*.toml".into()],
+        &[
+            dir.path().join("config/a.toml"),
+            dir.path().join("config/**/*.toml"),
+        ],
     )
     .unwrap();
 
@@ -61,8 +65,8 @@ fn deduplicates_files_matched_by_multiple_patterns() {
 fn rejects_empty_glob_patterns() {
     let dir = tempdir().unwrap();
 
-    let error =
-        fingerprint_tracked_patterns(dir.path(), &["missing/**/*.toml".into()]).unwrap_err();
+    let error = fingerprint_tracked_patterns(dir.path(), &[dir.path().join("missing/**/*.toml")])
+        .unwrap_err();
 
     assert!(error.to_string().contains("matched no files"));
 }
@@ -74,7 +78,8 @@ fn treats_glob_characters_in_root_as_literals() {
     fs::create_dir_all(root.join("config")).unwrap();
     fs::write(root.join("config/a.toml"), "").unwrap();
 
-    let fingerprints = fingerprint_tracked_patterns(&root, &["config/**/*.toml".into()]).unwrap();
+    let fingerprints =
+        fingerprint_tracked_patterns(&root, &[root.join("config/**/*.toml")]).unwrap();
 
     assert_eq!(fingerprints.len(), 1);
     assert_eq!(

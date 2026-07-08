@@ -75,7 +75,7 @@ impl Bootstrapper {
         for command in &self.config.post_install {
             let aqua_config = self.aqua_config();
             let envs = aqua::exec::aqua_envs(&aqua_executable, &aqua_config, &aqua_root);
-            let args = aqua::exec::exec_args_with_env(&command.command, &envs)?;
+            let args = aqua::exec::exec_args(&command.command);
             crate::process::run_foreground(&command.name, &aqua_executable, &args, Some(&envs))
                 .await?;
         }
@@ -152,15 +152,15 @@ impl Bootstrapper {
     }
 
     fn aqua_config(&self) -> PathBuf {
-        self.root.join(&self.config.aqua_config)
+        self.config.aqua_config.clone()
     }
 
     fn aqua_root(&self) -> PathBuf {
-        self.root.join(&self.config.aqua_root)
+        self.config.aqua_root.clone()
     }
 
     fn bootstrap_cache(&self) -> PathBuf {
-        self.root.join(&self.config.bootstrap_cache)
+        self.config.bootstrap_cache.clone()
     }
 
     fn aqua_executable(&self) -> PathBuf {

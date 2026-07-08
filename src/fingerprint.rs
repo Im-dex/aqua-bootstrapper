@@ -34,8 +34,9 @@ pub fn fingerprint_tracked_patterns(
 }
 
 pub fn fingerprint_tracked(root: &Path, path: &Path) -> Result<FileFingerprint> {
-    let absolute = root.join(path);
-    let metadata = fs::metadata(&absolute).map_err(|source| Error::TrackedFile {
+    require_absolute_tracked_path(path)?;
+
+    let metadata = fs::metadata(path).map_err(|source| Error::TrackedFile {
         path: path.to_path_buf(),
         source,
     })?;
@@ -47,7 +48,7 @@ pub fn fingerprint_tracked(root: &Path, path: &Path) -> Result<FileFingerprint> 
         )));
     }
 
-    fingerprint_from_metadata(path.to_path_buf(), &metadata)
+    fingerprint_from_metadata(state_path(root, path), &metadata)
 }
 
 fn fingerprint_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> Result<FileFingerprint> {
@@ -63,6 +64,8 @@ fn expand_glob_pattern(
     pattern: &Path,
     fingerprints: &mut BTreeMap<PathBuf, FileFingerprint>,
 ) -> Result<()> {
+    require_absolute_tracked_path(pattern)?;
+
     let pattern_str = glob_pattern(root, pattern)?;
 
     let mut matched_files = 0;
@@ -75,19 +78,14 @@ fn expand_glob_pattern(
                 pattern.display()
             ))
         })?;
-        let relative = absolute.strip_prefix(root).map_err(|error| {
-            Error::InvalidConfig(format!(
-                "tracked_files glob matched path outside root: {} ({error})",
-                absolute.display()
-            ))
-        })?;
-        if fingerprints.contains_key(relative) {
+        let state_path = state_path(root, &absolute);
+        if fingerprints.contains_key(&state_path) {
             matched_files += 1;
             continue;
         }
 
         let metadata = fs::metadata(&absolute).map_err(|source| Error::TrackedFile {
-            path: relative.to_path_buf(),
+            path: state_path.clone(),
             source,
         })?;
 
@@ -95,7 +93,7 @@ fn expand_glob_pattern(
             continue;
         }
 
-        let fingerprint = fingerprint_from_metadata(relative.to_path_buf(), &metadata)?;
+        let fingerprint = fingerprint_from_metadata(state_path, &metadata)?;
         fingerprints.insert(fingerprint.path.clone(), fingerprint);
         matched_files += 1;
     }
@@ -110,10 +108,51 @@ fn expand_glob_pattern(
     Ok(())
 }
 
+fn state_path(root: &Path, path: &Path) -> PathBuf {
+    path.strip_prefix(root).unwrap_or(path).to_path_buf()
+}
+
+fn require_absolute_tracked_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::InvalidConfig(
+            "tracked_files must not be empty".to_string(),
+        ));
+    }
+
+    if !path.is_absolute() {
+        return Err(Error::InvalidConfig(format!(
+            "tracked_files must be absolute: {}",
+            path.display()
+        )));
+    }
+
+    Ok(())
+}
+
 fn glob_pattern(root: &Path, pattern: &Path) -> Result<String> {
-    let root = root.to_str().ok_or_else(|| {
-        Error::InvalidConfig("tracked_files root path is not valid UTF-8".to_string())
-    })?;
+    if let Ok(relative) = pattern.strip_prefix(root) {
+        let root = root.to_str().ok_or_else(|| {
+            Error::InvalidConfig("tracked_files root path is not valid UTF-8".to_string())
+        })?;
+        let relative = relative.to_str().ok_or_else(|| {
+            Error::InvalidConfig(format!(
+                "tracked_files glob pattern is not valid UTF-8: {}",
+                pattern.display()
+            ))
+        })?;
+
+        if relative.is_empty() {
+            return Ok(Pattern::escape(root));
+        }
+
+        return Ok(format!(
+            "{}{}{}",
+            Pattern::escape(root),
+            std::path::MAIN_SEPARATOR,
+            relative
+        ));
+    }
+
     let pattern = pattern.to_str().ok_or_else(|| {
         Error::InvalidConfig(format!(
             "tracked_files glob pattern is not valid UTF-8: {}",
@@ -121,12 +160,7 @@ fn glob_pattern(root: &Path, pattern: &Path) -> Result<String> {
         ))
     })?;
 
-    Ok(format!(
-        "{}{}{}",
-        Pattern::escape(root),
-        std::path::MAIN_SEPARATOR,
-        pattern
-    ))
+    Ok(pattern.to_string())
 }
 
 fn is_glob_pattern(path: &Path) -> bool {
