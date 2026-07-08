@@ -80,7 +80,7 @@ fn substitute_env(
                 "environment variable is not set for command substitution: {name}"
             ))
         })?;
-        output.push_str(&replacement);
+        output.push_str(replacement);
         rest = &after_start[end + 1..];
 
         let Some(next_start) = rest.find("${") else {
