@@ -2,21 +2,19 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::path::Path;
 
+#[cfg(not(windows))]
 use flate2::read::GzDecoder;
+#[cfg(windows)]
 use zip::ZipArchive;
 
-use crate::aqua::platform::ArchiveKind;
 use crate::error::{Error, Result};
 use crate::util::fs::ensure_clean_dir;
 
-pub fn extract_aqua(archive: &Path, kind: ArchiveKind, root: &Path) -> Result<()> {
+pub fn extract_aqua(archive: &Path, root: &Path) -> Result<()> {
     let staging = root.with_extension("staging");
     ensure_clean_dir(&staging)?;
 
-    match kind {
-        ArchiveKind::TarGz => extract_tar_gz(archive, &staging)?,
-        ArchiveKind::Zip => extract_zip(archive, &staging)?,
-    }
+    extract_archive(archive, &staging)?;
 
     let bin = root.join("bin");
     fs::create_dir_all(&bin)?;
@@ -37,6 +35,17 @@ pub fn extract_aqua(archive: &Path, kind: ArchiveKind, root: &Path) -> Result<()
     Ok(())
 }
 
+#[cfg(not(windows))]
+fn extract_archive(archive: &Path, destination: &Path) -> Result<()> {
+    extract_tar_gz(archive, destination)
+}
+
+#[cfg(windows)]
+fn extract_archive(archive: &Path, destination: &Path) -> Result<()> {
+    extract_zip(archive, destination)
+}
+
+#[cfg(not(windows))]
 fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<()> {
     let file = File::open(archive)?;
     let gz = GzDecoder::new(file);
@@ -45,6 +54,7 @@ fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<()> {
         .map_err(|error| Error::Archive(error.to_string()))
 }
 
+#[cfg(windows)]
 fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
     let file = File::open(archive)?;
     let mut archive = ZipArchive::new(file)?;

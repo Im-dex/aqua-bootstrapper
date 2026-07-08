@@ -52,6 +52,7 @@ pub enum Error {
     #[error("task join error: {0}")]
     Join(#[from] tokio::task::JoinError),
 
+    #[cfg(windows)]
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
 }

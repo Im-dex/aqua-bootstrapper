@@ -1,15 +1,8 @@
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveKind {
-    TarGz,
-    Zip,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AquaAsset {
     pub name: String,
-    pub kind: ArchiveKind,
 }
 
 pub fn asset(_version: &str) -> Result<AquaAsset> {
@@ -26,19 +19,10 @@ pub fn asset(_version: &str) -> Result<AquaAsset> {
         other => return Err(Error::UnsupportedPlatform(other.to_string())),
     };
 
-    let kind = if os == "windows" {
-        ArchiveKind::Zip
-    } else {
-        ArchiveKind::TarGz
-    };
-    let extension = match kind {
-        ArchiveKind::TarGz => "tar.gz",
-        ArchiveKind::Zip => "zip",
-    };
+    let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
 
     Ok(AquaAsset {
         name: format!("aqua_{os}_{arch}.{extension}"),
-        kind,
     })
 }
 

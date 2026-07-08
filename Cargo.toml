@@ -7,22 +7,33 @@ license = "MIT"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
-flate2 = "1.1.9"
 glob = "0.3.3"
 hex = "0.4.3"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
-sigstore-verification = "0.2.8"
-tar = "0.4.46"
+sigstore-verification = { version = "0.2.8", default-features = false, features = ["rustls"] }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["fs", "macros", "process", "rt-multi-thread", "signal", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-zip = "8.6.0"
+
+[target.'cfg(windows)'.dependencies]
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(not(windows))'.dependencies]
+flate2 = "1.1.9"
+tar = "0.4.46"
 
 [dev-dependencies]
 tempfile = "3.27.0"
 base64 = "0.22.1"
+
+[profile.release]
+opt-level = "z"
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

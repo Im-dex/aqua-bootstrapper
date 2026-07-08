@@ -46,8 +46,7 @@ pub async fn ensure_installed(
     let root = aqua_root.to_path_buf();
     let archive_for_extract = archive.clone();
     progress::step(format!("Extracting Aqua to {}...", aqua_root.display()));
-    tokio::task::spawn_blocking(move || extract_aqua(&archive_for_extract, asset.kind, &root))
-        .await??;
+    tokio::task::spawn_blocking(move || extract_aqua(&archive_for_extract, &root)).await??;
     let executable = crate::aqua::executable_path(aqua_root);
     progress::step(format!("Aqua is ready at {}", executable.display()));
 
