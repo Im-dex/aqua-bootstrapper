@@ -27,6 +27,12 @@ Aqua installation and config. `AQUA_ROOT_DIR` and `AQUA_CONFIG` are also read by
 Aqua itself, so callers can use `AQUA_EXE` without repeating `--root-dir` or
 `--config`.
 
+`post_install.command` and `app.command` support `${VAR}` substitutions in each
+argument. Values are read from the bootstrapper process environment plus the
+variables above. Bootstrapper-provided variables take precedence over external
+variables with the same name. Missing variables fail the bootstrap with an
+invalid configuration error.
+
 ## Configuration
 
 ```json
