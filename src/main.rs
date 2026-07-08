@@ -16,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::bootstrap::Bootstrapper;
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -39,7 +39,13 @@ async fn main() {
 
 async fn run() -> Result<i32> {
     let cli = Cli::parse();
-    let config_path = cli.config.canonicalize()?;
+    let config_path =
+        cli.config
+            .canonicalize()
+            .map_err(|source| Error::BootstrapConfigInaccessible {
+                path: cli.config,
+                source,
+            })?;
     let root = config_path
         .parent()
         .map(PathBuf::from)

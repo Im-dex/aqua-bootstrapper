@@ -50,3 +50,14 @@ fn rejects_parent_dir_paths() {
 
     assert!(Config::read(&path).is_err());
 }
+
+#[test]
+fn read_error_includes_config_path() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-bootstrap.json");
+
+    let error = Config::read(&path).unwrap_err().to_string();
+
+    assert!(error.contains("bootstrap config is not accessible"));
+    assert!(error.contains(&path.display().to_string()));
+}

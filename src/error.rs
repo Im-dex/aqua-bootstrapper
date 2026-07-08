@@ -7,6 +7,12 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
 
+    #[error("bootstrap config is not accessible: {path}: {source}")]
+    BootstrapConfigInaccessible {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
     #[error("unsupported platform: {0}")]
     UnsupportedPlatform(String),
 

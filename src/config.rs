@@ -33,7 +33,10 @@ pub struct AppCommand {
 
 impl Config {
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = fs::read(path)?;
+        let bytes = fs::read(path).map_err(|source| Error::BootstrapConfigInaccessible {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let config: Config = serde_json::from_slice(&bytes)?;
         config.validate()?;
         Ok(config)
