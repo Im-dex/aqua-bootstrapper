@@ -1,9 +1,7 @@
 use std::path::Path;
 
-use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
-use reqwest::Client;
 use serde_json::Value;
+use sigstore_verification::{Attestation, AttestationClient, FetchParams};
 
 use crate::aqua::{OWNER, REPO};
 use crate::error::{Error, Result};
@@ -22,21 +20,10 @@ pub async fn verify_aqua_release_asset(
         )));
     }
 
-    let verified =
-        sigstore_verification::verify_github_attestation(artifact_path, OWNER, REPO, None, None)
-            .await
-            .map_err(|error| Error::Attestation(error.to_string()))?;
-
-    if !verified {
-        return Err(Error::Attestation(
-            "sigstore-verification returned a negative verification result".to_string(),
-        ));
-    }
-
-    verify_slsa_policy(version, sha256_hex).await
+    verify_slsa_policy(artifact_path, version, sha256_hex).await
 }
 
-async fn verify_slsa_policy(version: &str, sha256_hex: &str) -> Result<()> {
+async fn verify_slsa_policy(artifact_path: &Path, version: &str, sha256_hex: &str) -> Result<()> {
     let expected_ref = format!("refs/tags/{version}");
     let expected_repo_short = format!("github.com/{OWNER}/{REPO}");
     let expected_repo_https = format!("https://github.com/{OWNER}/{REPO}");
@@ -48,12 +35,26 @@ async fn verify_slsa_policy(version: &str, sha256_hex: &str) -> Result<()> {
         )));
     }
 
-    let statements = fetch_slsa_statements(sha256_hex).await?;
+    let attestations = fetch_aqua_attestations(sha256_hex).await?;
+    if attestations.is_empty() {
+        return Err(Error::Attestation(format!(
+            "no GitHub attestations found for sha256:{sha256_hex}"
+        )));
+    }
+
     let mut failures = Vec::new();
 
-    for statement in &statements {
-        match inspect_slsa_statement(
-            statement,
+    for (index, attestation) in attestations.iter().enumerate() {
+        let statement = match slsa_statement_from_attestation(attestation) {
+            Ok(statement) => statement,
+            Err(error) => {
+                failures.push(format!("attestation #{index}: {error}"));
+                continue;
+            }
+        };
+
+        if let Err(error) = inspect_slsa_statement(
+            &statement,
             sha256_hex,
             &expected_ref,
             [
@@ -62,6 +63,17 @@ async fn verify_slsa_policy(version: &str, sha256_hex: &str) -> Result<()> {
                 expected_repo_git.as_str(),
             ],
         ) {
+            failures.push(format!("attestation #{index}: {error}"));
+            continue;
+        }
+
+        match sigstore_verification::verify_attestations(
+            std::slice::from_ref(attestation),
+            artifact_path,
+            None,
+        )
+        .await
+        {
             Ok(()) => {
                 tracing::debug!(
                     repository = %format!("{OWNER}/{REPO}"),
@@ -72,7 +84,7 @@ async fn verify_slsa_policy(version: &str, sha256_hex: &str) -> Result<()> {
                 );
                 return Ok(());
             }
-            Err(error) => failures.push(error),
+            Err(error) => failures.push(format!("attestation #{index}: {error}")),
         }
     }
 
@@ -82,73 +94,36 @@ async fn verify_slsa_policy(version: &str, sha256_hex: &str) -> Result<()> {
     )))
 }
 
-async fn fetch_slsa_statements(sha256_hex: &str) -> Result<Vec<Value>> {
-    let url = format!(
-        "https://api.github.com/orgs/{OWNER}/attestations/sha256:{sha256_hex}?per_page=30&predicate_type=provenance"
-    );
+async fn fetch_aqua_attestations(sha256_hex: &str) -> Result<Vec<Attestation>> {
+    let client = AttestationClient::builder()
+        .build()
+        .map_err(|error| Error::Attestation(error.to_string()))?;
+    let params = FetchParams {
+        owner: OWNER.to_string(),
+        repo: Some(format!("{OWNER}/{REPO}")),
+        digest: format!("sha256:{sha256_hex}"),
+        limit: 30,
+        predicate_type: None,
+    };
 
-    let client = Client::new();
-    let response = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2026-03-10")
-        .header("User-Agent", "aqua-bootstrapper")
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        return Err(Error::Attestation(format!(
-            "GitHub attestations API returned {}",
-            response.status()
-        )));
-    }
-
-    let response: Value = response.json().await?;
-    let mut statements = Vec::new();
-    collect_dsse_payloads(&response, &mut statements);
-
-    for bundle_url in collect_bundle_urls(&response) {
-        let bundle = fetch_attestation_bundle(&client, &bundle_url).await?;
-        collect_dsse_payloads(&bundle, &mut statements);
-    }
-
-    if statements.is_empty() {
-        return Err(Error::Attestation(format!(
-            "no SLSA payloads found for sha256:{sha256_hex}"
-        )));
-    }
-
-    Ok(statements)
+    client
+        .fetch_attestations(params)
+        .await
+        .map_err(|error| Error::Attestation(error.to_string()))
 }
 
-async fn fetch_attestation_bundle(client: &Client, bundle_url: &str) -> Result<Value> {
-    let url = reqwest::Url::parse(bundle_url).map_err(|error| {
-        Error::Attestation(format!(
-            "invalid GitHub attestation bundle_url {bundle_url}: {error}"
-        ))
-    })?;
+fn slsa_statement_from_attestation(
+    attestation: &Attestation,
+) -> std::result::Result<Value, String> {
+    let bundle = sigstore_verification::bundle::parse_bundle(attestation)
+        .map_err(|error| error.to_string())?;
 
-    if url.scheme() != "https" {
-        return Err(Error::Attestation(format!(
-            "GitHub attestation bundle_url must use https: {bundle_url}"
-        )));
+    if bundle.payload.is_empty() {
+        return Err("attestation bundle has no DSSE payload".to_string());
     }
 
-    let response = client
-        .get(url)
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "aqua-bootstrapper")
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        return Err(Error::Attestation(format!(
-            "GitHub attestation bundle_url returned {}",
-            response.status()
-        )));
-    }
-
-    Ok(response.json().await?)
+    serde_json::from_slice(&bundle.payload)
+        .map_err(|error| format!("attestation payload is not valid JSON: {error}"))
 }
 
 fn inspect_slsa_statement(
@@ -191,65 +166,6 @@ fn inspect_slsa_statement(
     Ok(())
 }
 
-fn collect_bundle_urls(value: &Value) -> Vec<String> {
-    let mut urls = Vec::new();
-    collect_bundle_urls_inner(value, &mut urls);
-    urls
-}
-
-fn collect_bundle_urls_inner(value: &Value, urls: &mut Vec<String>) {
-    match value {
-        Value::Object(object) => {
-            if let Some(bundle_url) = object.get("bundle_url").and_then(Value::as_str)
-                && !urls.iter().any(|url| url == bundle_url)
-            {
-                urls.push(bundle_url.to_string());
-            }
-
-            for child in object.values() {
-                collect_bundle_urls_inner(child, urls);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_bundle_urls_inner(item, urls);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_dsse_payloads(value: &Value, statements: &mut Vec<Value>) {
-    match value {
-        Value::Object(object) => {
-            if let Some(payload) = object.get("payload").and_then(Value::as_str)
-                && let Some(statement) = decode_statement_payload(payload)
-            {
-                statements.push(statement);
-            }
-
-            for child in object.values() {
-                collect_dsse_payloads(child, statements);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_dsse_payloads(item, statements);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn decode_statement_payload(payload: &str) -> Option<Value> {
-    let bytes = STANDARD
-        .decode(payload)
-        .or_else(|_| STANDARD_NO_PAD.decode(payload))
-        .ok()?;
-
-    serde_json::from_slice(&bytes).ok()
-}
-
 fn subject_digest_matches(statement: &Value, sha256_hex: &str) -> bool {
     statement
         .get("subject")
@@ -280,30 +196,46 @@ fn json_contains_string(value: &Value, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
     use serde_json::json;
+    use sigstore_verification::api::{Attestation, DsseEnvelope, Signature, SigstoreBundle};
 
     use super::*;
 
     #[test]
-    fn collect_bundle_urls_finds_nested_urls_once() {
-        let response = json!({
-            "attestations": [
-                { "bundle_url": "https://example.test/bundle-1.json" },
+    fn extracts_slsa_statement_from_attestation_bundle() {
+        let statement = json!({
+            "predicateType": SLSA_PROVENANCE_V1,
+            "subject": [
                 {
-                    "nested": {
-                        "bundle_url": "https://example.test/bundle-2.json"
+                    "digest": {
+                        "sha256": "abc123"
                     }
-                },
-                { "bundle_url": "https://example.test/bundle-1.json" }
+                }
             ]
         });
+        let payload = STANDARD.encode(serde_json::to_vec(&statement).unwrap());
+        let attestation = Attestation {
+            bundle: Some(SigstoreBundle {
+                media_type: "application/vnd.dev.sigstore.bundle+json;version=0.3".to_string(),
+                dsse_envelope: Some(DsseEnvelope {
+                    payload,
+                    payload_type: "application/vnd.in-toto+json".to_string(),
+                    signatures: vec![Signature {
+                        sig: "signature".to_string(),
+                        keyid: None,
+                    }],
+                }),
+                verification_material: None,
+                message_signature: None,
+            }),
+            bundle_url: None,
+        };
 
         assert_eq!(
-            collect_bundle_urls(&response),
-            vec![
-                "https://example.test/bundle-1.json".to_string(),
-                "https://example.test/bundle-2.json".to_string(),
-            ]
+            slsa_statement_from_attestation(&attestation).unwrap(),
+            statement
         );
     }
 }
