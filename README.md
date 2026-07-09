@@ -113,6 +113,10 @@ successfully.
 The state records the pinned Aqua SHA-256. Changing either `aqua.version` or
 the current platform's hash invalidates the cached binary.
 
+The downloaded Aqua archive is temporary: it is removed after successful
+extraction, and any leftover download workspace is cleared before the next
+download attempt.
+
 Only metadata fingerprints are tracked:
 
 - file size

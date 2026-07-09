@@ -17,7 +17,8 @@ pub async fn ensure_installed(
     cache: &Path,
 ) -> Result<PathBuf> {
     let asset = platform::asset(version)?;
-    let download_dir = cache.join("downloads").join(version);
+    let download_dir = cache.join("downloads");
+    reset_download_dir(&download_dir).await?;
     let archive = download_release_asset(client, version, &asset.name, &download_dir).await?;
 
     let digest = tokio::task::spawn_blocking({
@@ -43,10 +44,32 @@ pub async fn ensure_installed(
     let archive_for_extract = archive.clone();
     progress::step(format!("Extracting Aqua to {}...", aqua_root.display()));
     tokio::task::spawn_blocking(move || extract_aqua(&archive_for_extract, &root)).await??;
+    discard_download(&archive, &download_dir).await?;
     let executable = crate::aqua::executable_path(aqua_root);
     progress::step(format!("Aqua is ready at {}", executable.display()));
 
     Ok(executable)
+}
+
+async fn reset_download_dir(download_dir: &Path) -> Result<()> {
+    match tokio::fs::remove_dir_all(download_dir).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    tokio::fs::create_dir_all(download_dir).await?;
+    Ok(())
+}
+
+async fn discard_download(archive: &Path, download_dir: &Path) -> Result<()> {
+    tokio::fs::remove_file(archive).await?;
+
+    match tokio::fs::remove_dir(download_dir).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn verify_checksum(asset: &str, expected: &str, actual: &str) -> Result<()> {
@@ -63,7 +86,10 @@ fn verify_checksum(asset: &str, expected: &str, actual: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::verify_checksum;
+    use super::{discard_download, reset_download_dir, verify_checksum};
+    use std::fs;
+
+    use tempfile::tempdir;
 
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -77,5 +103,33 @@ mod tests {
         let error = verify_checksum("aqua.zip", DIGEST, "different").unwrap_err();
 
         assert!(error.to_string().contains("checksum mismatch"));
+    }
+
+    #[tokio::test]
+    async fn resets_download_workspace_before_each_attempt() {
+        let dir = tempdir().unwrap();
+        let downloads = dir.path().join("downloads");
+        let stale_archive = downloads.join("v2.59.2/aqua.zip");
+        fs::create_dir_all(stale_archive.parent().unwrap()).unwrap();
+        fs::write(&stale_archive, "stale").unwrap();
+
+        reset_download_dir(&downloads).await.unwrap();
+
+        assert!(downloads.is_dir());
+        assert!(!stale_archive.exists());
+    }
+
+    #[tokio::test]
+    async fn discards_archive_after_extraction() {
+        let dir = tempdir().unwrap();
+        let downloads = dir.path().join("downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        let archive = downloads.join("aqua.zip");
+        fs::write(&archive, "archive").unwrap();
+
+        discard_download(&archive, &downloads).await.unwrap();
+
+        assert!(!archive.exists());
+        assert!(!downloads.exists());
     }
 }

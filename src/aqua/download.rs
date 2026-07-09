@@ -31,6 +31,7 @@ pub async fn download_release_asset(
     }
 
     let target = download_dir.join(asset_name);
+    remove_stale_asset(&target).await?;
     let temp = target.with_extension("download");
     let mut file = fs::File::create(&temp).await?;
     let mut progress = Progress::new(
@@ -54,4 +55,12 @@ pub async fn download_release_asset(
     ));
 
     Ok(target)
+}
+
+async fn remove_stale_asset(path: &Path) -> Result<()> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
