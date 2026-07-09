@@ -58,10 +58,10 @@ fail the bootstrap with an invalid configuration error.
     "sha": {
       "windows": "fc0a9f4087297ec16b62a709b4cfffafef321d39250787957e9953c5e1fe9316",
       "linux": "d6f920201c71fb42881af51f8f63c3f06da778b38399248b2c777a288ebe3884"
-    }
+    },
+    "config": "${PROJECT_ROOT}/aqua.yaml",
+    "root": "${PROJECT_ROOT}/.dv/aqua"
   },
-  "aqua_config": "${PROJECT_ROOT}/aqua.yaml",
-  "aqua_root": "${PROJECT_ROOT}/.dv/aqua",
   "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
   "tracked_files": [
     "${PROJECT_ROOT}/aqua.yaml",

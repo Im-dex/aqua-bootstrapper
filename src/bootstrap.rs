@@ -242,11 +242,11 @@ impl Bootstrapper {
     }
 
     fn aqua_config(&self) -> PathBuf {
-        self.config.aqua_config.clone()
+        self.config.aqua.config.clone()
     }
 
     fn aqua_root(&self) -> PathBuf {
-        self.config.aqua_root.clone()
+        self.config.aqua.root.clone()
     }
 
     fn bootstrap_cache(&self) -> PathBuf {
@@ -382,9 +382,9 @@ mod tests {
                         linux: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
                             .to_string(),
                     },
+                    config: root.join("aqua.yaml"),
+                    root: root.join(".dv").join("aqua"),
                 },
-                aqua_config: root.join("aqua.yaml"),
-                aqua_root: root.join(".dv").join("aqua"),
                 bootstrap_cache: root.join(".dv").join("bootstrap"),
                 tracked_files: vec![root.join("aqua.yaml")],
                 post_install: vec![],

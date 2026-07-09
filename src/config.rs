@@ -13,8 +13,6 @@ pub const CONFIG_SCHEMA: u32 = 2;
 pub struct Config {
     pub schema: u32,
     pub aqua: AquaConfig,
-    pub aqua_config: PathBuf,
-    pub aqua_root: PathBuf,
     pub bootstrap_cache: PathBuf,
     pub tracked_files: Vec<PathBuf>,
     #[serde(default)]
@@ -28,6 +26,8 @@ pub struct Config {
 pub struct AquaConfig {
     pub version: String,
     pub sha: AquaSha,
+    pub config: PathBuf,
+    pub root: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -79,8 +79,8 @@ impl Config {
         require_non_empty("aqua.version", &self.aqua.version)?;
         require_sha256("aqua.sha.windows", &self.aqua.sha.windows)?;
         require_sha256("aqua.sha.linux", &self.aqua.sha.linux)?;
-        require_absolute_path("aqua_config", &self.aqua_config)?;
-        require_absolute_path("aqua_root", &self.aqua_root)?;
+        require_absolute_path("aqua.config", &self.aqua.config)?;
+        require_absolute_path("aqua.root", &self.aqua.root)?;
         require_absolute_path("bootstrap_cache", &self.bootstrap_cache)?;
 
         if self.tracked_files.is_empty() {
@@ -266,10 +266,10 @@ mod tests {
                     "sha": {
                         "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                         "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-                    }
+                    },
+                    "config": "${PROJECT_ROOT}/aqua.yaml",
+                    "root": "${PROJECT_ROOT}/.dv/aqua"
                 },
-                "aqua_config": "${PROJECT_ROOT}/aqua.yaml",
-                "aqua_root": "${PROJECT_ROOT}/.dv/aqua",
                 "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
                 "tracked_files": ["${PROJECT_ROOT}/aqua.yaml", "${PROJECT_ROOT}/config/**/*.toml"],
                 "post_install": [{"name": "sync", "command": ["uv", "sync", "--locked"]}],
@@ -282,11 +282,11 @@ mod tests {
 
         assert_eq!(config.aqua.version, "v2.59.2");
         assert_eq!(
-            config.aqua_config,
+            config.aqua.config,
             std::path::PathBuf::from(format!("{project_root}/aqua.yaml"))
         );
         assert_eq!(
-            config.aqua_root,
+            config.aqua.root,
             std::path::PathBuf::from(format!("{project_root}/.dv/aqua"))
         );
         assert_eq!(
@@ -311,15 +311,18 @@ mod tests {
         let envs = HashMap::from([("PROJECT_ROOT".to_string(), "C:\\work\\project".to_string())]);
 
         let config =
-            substitute_env(r#"{"aqua_config":"${PROJECT_ROOT}/aqua.yaml"}"#, &envs).unwrap();
+            substitute_env(r#"{"aqua":{"config":"${PROJECT_ROOT}/aqua.yaml"}}"#, &envs).unwrap();
 
-        assert_eq!(config, r#"{"aqua_config":"C:\\work\\project/aqua.yaml"}"#);
+        assert_eq!(
+            config,
+            r#"{"aqua":{"config":"C:\\work\\project/aqua.yaml"}}"#
+        );
     }
 
     #[test]
     fn rejects_missing_config_env_values() {
         let error = substitute_env(
-            r#"{"aqua_config":"${MISSING_ENV}/aqua.yaml"}"#,
+            r#"{"aqua":{"config":"${MISSING_ENV}/aqua.yaml"}}"#,
             &HashMap::new(),
         )
         .unwrap_err()
@@ -353,10 +356,10 @@ mod tests {
                     "sha": {{
                         "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                         "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-                    }}
+                    }},
+                    "config": "{project_root}/aqua.yaml",
+                    "root": "{project_root}/.dv/aqua"
                 }},
-                "aqua_config": "{project_root}/aqua.yaml",
-                "aqua_root": "{project_root}/.dv/aqua",
                 "bootstrap_cache": "{project_root}/.dv/bootstrap",
                 "tracked_files": ["{project_root}/aqua.yaml"],
                 "bootstrapped_tools": {{"node_exe": "node"}},
@@ -382,10 +385,10 @@ mod tests {
                 "schema": 2,
                 "aqua": {{
                     "version": "v2.59.2",
-                    "sha": {{"windows": "not-a-digest", "linux": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+                    "sha": {{"windows": "not-a-digest", "linux": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+                    "config": "{project_root}/aqua.yaml",
+                    "root": "{project_root}/.dv/aqua"
                 }},
-                "aqua_config": "{project_root}/aqua.yaml",
-                "aqua_root": "{project_root}/.dv/aqua",
                 "bootstrap_cache": "{project_root}/.dv/bootstrap",
                 "tracked_files": ["{project_root}/aqua.yaml"],
                 "app": {{"command": ["uv", "run", "dv"]}}
@@ -407,9 +410,7 @@ mod tests {
             &path,
             json!({
                 "schema": 2,
-                "aqua": aqua_config(),
-                "aqua_config": json_path(&dir.path().join("aqua.yaml")),
-                "aqua_root": json_path(&dir.path().join(".dv/aqua")),
+                "aqua": aqua_config(&dir.path().join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [{"name": "sync", "command": ["uv", "sync", "--locked"]}],
@@ -434,9 +435,7 @@ mod tests {
             &path,
             json!({
                 "schema": 2,
-                "aqua": aqua_config(),
-                "aqua_config": "aqua.yaml",
-                "aqua_root": "/tmp/project/.dv/aqua",
+                "aqua": aqua_config(Path::new("aqua.yaml"), Path::new("/tmp/project/.dv/aqua")),
                 "bootstrap_cache": "/tmp/project/.dv/bootstrap",
                 "tracked_files": ["/tmp/project/aqua.yaml"],
                 "post_install": [],
@@ -458,8 +457,6 @@ mod tests {
             json!({
                 "schema": 1,
                 "aqua_version": "v2.59.2",
-                "aqua_config": json_path(&dir.path().join("aqua.yaml")),
-                "aqua_root": json_path(&dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [],
@@ -480,9 +477,7 @@ mod tests {
             &path,
             json!({
                 "schema": 2,
-                "aqua": aqua_config(),
-                "aqua_config": json_path(&dir.path().join("..").join("aqua.yaml")),
-                "aqua_root": json_path(&dir.path().join(".dv/aqua")),
+                "aqua": aqua_config(&dir.path().join("..").join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [],
@@ -510,13 +505,15 @@ mod tests {
         path.display().to_string()
     }
 
-    fn aqua_config() -> serde_json::Value {
+    fn aqua_config(config: &Path, root: &Path) -> serde_json::Value {
         json!({
             "version": "v2.59.2",
             "sha": {
                 "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-            }
+            },
+            "config": json_path(config),
+            "root": json_path(root)
         })
     }
 }
