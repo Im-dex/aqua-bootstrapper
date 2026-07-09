@@ -16,6 +16,8 @@ pub struct BootstrapState {
     pub aqua_version: String,
     pub aqua_executable: PathBuf,
     pub tracked_files: Vec<FileFingerprint>,
+    #[serde(default = "default_post_install_completed")]
+    pub post_install_completed: bool,
 }
 
 impl BootstrapState {
@@ -23,12 +25,14 @@ impl BootstrapState {
         aqua_version: String,
         aqua_executable: PathBuf,
         tracked_files: Vec<FileFingerprint>,
+        post_install_completed: bool,
     ) -> Self {
         Self {
             schema: STATE_SCHEMA,
             aqua_version,
             aqua_executable,
             tracked_files,
+            post_install_completed,
         }
     }
 
@@ -41,6 +45,10 @@ impl BootstrapState {
         }
         Ok(())
     }
+}
+
+fn default_post_install_completed() -> bool {
+    true
 }
 
 pub fn state_path(cache: &Path) -> PathBuf {

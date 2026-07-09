@@ -91,16 +91,21 @@ No fallback verification mode exists.
 ## State
 
 State is stored as JSON under `bootstrap_cache/state.json` and is updated
-atomically only after a complete successful bootstrap.
+atomically. Aqua download, verification, and extraction are recorded before
+`aqua install` starts, so a failed `aqua install` or `post_install` step is
+retried without downloading and verifying Aqua again. `aqua install` still runs
+on every bootstrap retry because Aqua tracks its own package cache freshness.
+The application is only launched after `post_install` has completed
+successfully.
 
 Only metadata fingerprints are tracked:
 
 - file size
 - modification time in nanoseconds since Unix epoch
 
-`tracked_files` entries must resolve to absolute paths and may use glob patterns
-such as `${PROJECT_ROOT}/config/**/*.toml`. Glob patterns must match at least
-one file. Matched files are sorted and deduplicated before they are stored in
-state.
+`tracked_files` entries must include every input that should invalidate the
+bootstrap state, must resolve to absolute paths, and may use glob patterns such
+as `${PROJECT_ROOT}/config/**/*.toml`. Glob patterns must match at least one
+file. Matched files are sorted and deduplicated before they are stored in state.
 
 Content hashes are intentionally not used for fast-path invalidation.
