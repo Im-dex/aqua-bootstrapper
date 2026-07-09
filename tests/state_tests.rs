@@ -1,5 +1,6 @@
 use aqua_bootstrapper::fingerprint::FileFingerprint;
 use aqua_bootstrapper::state::{self, BootstrapState};
+use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 #[test]
@@ -14,6 +15,7 @@ fn state_round_trip_is_atomic_visible() {
             mtime_ns: 7,
         }],
         false,
+        BTreeMap::new(),
     );
 
     state::write_atomic(dir.path(), &state).unwrap();
@@ -36,4 +38,5 @@ fn legacy_state_without_post_install_completed_is_complete() {
     .unwrap();
 
     assert!(state.post_install_completed);
+    assert!(state.bootstrapped_tools.is_empty());
 }

@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +19,8 @@ pub struct Config {
     pub tracked_files: Vec<PathBuf>,
     #[serde(default)]
     pub post_install: Vec<NamedCommand>,
+    #[serde(default)]
+    pub bootstrapped_tools: BTreeMap<String, String>,
     pub app: AppCommand,
 }
 
@@ -70,6 +72,11 @@ impl Config {
         for command in &self.post_install {
             require_non_empty("post_install.name", &command.name)?;
             require_command("post_install.command", &command.command)?;
+        }
+
+        for (env_name, tool) in &self.bootstrapped_tools {
+            require_bootstrapped_tool_env_name(env_name)?;
+            require_non_empty(&format!("bootstrapped_tools.{env_name}"), tool)?;
         }
 
         require_command("app.command", &self.app.command)?;
@@ -160,6 +167,20 @@ fn require_env_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn require_bootstrapped_tool_env_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+    {
+        return Err(Error::InvalidConfig(format!(
+            "bootstrapped_tools key must contain only uppercase ASCII letters and underscores: {name}"
+        )));
+    }
+
+    Ok(())
+}
+
 fn require_absolute_path(field: &str, path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() {
         return Err(Error::InvalidConfig(format!("{field} must not be empty")));
@@ -208,6 +229,7 @@ mod tests {
                 "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
                 "tracked_files": ["${PROJECT_ROOT}/aqua.yaml", "${PROJECT_ROOT}/config/**/*.toml"],
                 "post_install": [{"name": "sync", "command": ["uv", "sync", "--locked"]}],
+                "bootstrapped_tools": {"NODE_EXE": "node"},
                 "app": {"command": ["uv", "run", "dv"]}
             }"#,
             &envs,
@@ -232,6 +254,10 @@ mod tests {
                 std::path::PathBuf::from(format!("{project_root}/aqua.yaml")),
                 std::path::PathBuf::from(format!("{project_root}/config/**/*.toml")),
             ]
+        );
+        assert_eq!(
+            config.bootstrapped_tools,
+            [("NODE_EXE".to_string(), "node".to_string())].into()
         );
     }
 
@@ -265,5 +291,31 @@ mod tests {
             .to_string();
 
         assert!(error.contains("unclosed environment substitution"));
+    }
+
+    #[test]
+    fn rejects_invalid_bootstrapped_tool_env_name() {
+        let project_root = if cfg!(windows) {
+            "C:/work/project"
+        } else {
+            "/work/project"
+        };
+        let config = format!(
+            r#"{{
+                "schema": 1,
+                "aqua_version": "v2.59.2",
+                "aqua_config": "{project_root}/aqua.yaml",
+                "aqua_root": "{project_root}/.dv/aqua",
+                "bootstrap_cache": "{project_root}/.dv/bootstrap",
+                "tracked_files": ["{project_root}/aqua.yaml"],
+                "bootstrapped_tools": {{"node_exe": "node"}},
+                "app": {{"command": ["uv", "run", "dv"]}}
+            }}"#,
+        );
+        let error = parse_config(&config, &HashMap::new())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("bootstrapped_tools key"));
     }
 }

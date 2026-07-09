@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,12 @@ pub const STATE_SCHEMA: u32 = 1;
 pub const STATE_FILE: &str = "state.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrappedTool {
+    pub tool: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapState {
     pub schema: u32,
     pub aqua_version: String,
@@ -18,6 +25,8 @@ pub struct BootstrapState {
     pub tracked_files: Vec<FileFingerprint>,
     #[serde(default = "default_post_install_completed")]
     pub post_install_completed: bool,
+    #[serde(default)]
+    pub bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
 }
 
 impl BootstrapState {
@@ -26,6 +35,7 @@ impl BootstrapState {
         aqua_executable: PathBuf,
         tracked_files: Vec<FileFingerprint>,
         post_install_completed: bool,
+        bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
     ) -> Self {
         Self {
             schema: STATE_SCHEMA,
@@ -33,6 +43,7 @@ impl BootstrapState {
             aqua_executable,
             tracked_files,
             post_install_completed,
+            bootstrapped_tools,
         }
     }
 

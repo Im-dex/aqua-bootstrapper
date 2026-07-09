@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::process;
 
 pub fn install_args() -> Vec<String> {
@@ -11,6 +11,10 @@ pub fn exec_args(command: &[String]) -> Vec<String> {
     let mut args = vec!["exec".to_string(), "--".to_string()];
     args.extend(command.iter().cloned());
     args
+}
+
+pub fn which_args(tool: &str) -> Vec<String> {
+    vec!["which".to_string(), tool.to_string()]
 }
 
 pub fn aqua_envs(aqua: &Path, aqua_config: &Path, aqua_root: &Path) -> Vec<(String, String)> {
@@ -39,16 +43,45 @@ pub async fn run_exec(
     aqua_root: &Path,
     aqua_config: &Path,
     command: &[String],
+    app_envs: &[(String, String)],
 ) -> Result<i32> {
     let mut envs = aqua_envs(aqua, aqua_config, aqua_root);
     envs.push(("AQUA_DISABLE_LAZY_INSTALL".to_string(), "true".to_string()));
+    envs.extend(app_envs.iter().cloned());
     let args = exec_args(command);
     process::run_app(name, aqua, &args, Some(&envs)).await
 }
 
+pub async fn resolve_tool(
+    aqua: &Path,
+    aqua_config: &Path,
+    aqua_root: &Path,
+    tool: &str,
+) -> Result<PathBuf> {
+    let args = which_args(tool);
+    let name = format!("aqua which {tool}");
+    let output = process::run_capture_stdout(
+        &name,
+        aqua,
+        &args,
+        Some(&aqua_envs(aqua, aqua_config, aqua_root)),
+    )
+    .await?;
+    let path = PathBuf::from(output.trim());
+
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return Err(Error::CommandOutput {
+            name,
+            reason: format!("expected an absolute path, got: {}", output.trim()),
+        });
+    }
+
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{exec_args, install_args};
+    use super::{exec_args, install_args, which_args};
 
     #[test]
     fn install_args_install_all_configured_packages() {
@@ -61,5 +94,10 @@ mod tests {
             exec_args(&["uv".to_string(), "run".to_string(), "dv".to_string()]),
             ["exec", "--", "uv", "run", "dv"]
         );
+    }
+
+    #[test]
+    fn which_args_look_up_one_tool() {
+        assert_eq!(which_args("node"), ["which", "node"]);
     }
 }

@@ -37,6 +37,13 @@ Aqua installation and config. `AQUA_ROOT_DIR` and `AQUA_CONFIG` are also read by
 Aqua itself, so callers can use `AQUA_EXE` without repeating `--root-dir` or
 `--config`.
 
+`bootstrapped_tools` can additionally expose direct paths to specific
+Aqua-managed tools. Each key must contain only uppercase ASCII letters and
+underscores. After `aqua install`, the bootstrapper resolves every tool with
+`aqua which` and launches the app with `BOOTSTRAPPED_<KEY>` set to the cached
+absolute path. For example, `"NODE_EXE": "node"` sets
+`BOOTSTRAPPED_NODE_EXE`.
+
 The configuration file supports `${VAR}` substitutions before JSON parsing.
 Values are read from the bootstrapper process environment. Missing variables
 fail the bootstrap with an invalid configuration error.
@@ -63,6 +70,10 @@ fail the bootstrap with an invalid configuration error.
       "command": ["uv", "sync", "--locked"]
     }
   ],
+  "bootstrapped_tools": {
+    "NODE_EXE": "node",
+    "PYTHON_EXE": "python"
+  },
   "app": {
     "command": ["uv", "run", "dv"]
   }
@@ -107,5 +118,7 @@ Only metadata fingerprints are tracked:
 bootstrap state, must resolve to absolute paths, and may use glob patterns such
 as `${PROJECT_ROOT}/config/**/*.toml`. Glob patterns must match at least one
 file. Matched files are sorted and deduplicated before they are stored in state.
+The `bootstrapped_tools` mapping is also compared with state so changing an
+environment-variable name or tool name refreshes the cached path.
 
 Content hashes are intentionally not used for fast-path invalidation.

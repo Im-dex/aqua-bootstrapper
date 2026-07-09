@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use reqwest::Client;
@@ -8,7 +9,7 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::fingerprint::{self, FileFingerprint};
 use crate::lock::BootstrapLock;
-use crate::state::{self, BootstrapState};
+use crate::state::{self, BootstrapState, BootstrappedTool};
 
 #[derive(Debug)]
 pub struct Bootstrapper {
@@ -43,7 +44,9 @@ impl Bootstrapper {
             let snapshot = self.snapshot().await?;
             if self.is_valid(&snapshot) {
                 debug!("bootstrap fast path hit");
-                return self.launch_app().await;
+                return self
+                    .launch_app(snapshot.state.as_ref().expect("valid state is present"))
+                    .await;
             }
             drop(lock);
 
@@ -74,13 +77,15 @@ impl Bootstrapper {
             )
             .await?;
 
-            self.write_state(snapshot.tracked_files.clone(), false)
+            self.write_state(snapshot.tracked_files.clone(), false, BTreeMap::new())
                 .await?;
 
             aqua_executable
         };
 
         aqua::exec::run_install(&aqua_executable, &self.aqua_config(), &aqua_root).await?;
+
+        let bootstrapped_tools = self.resolve_bootstrapped_tools(&aqua_executable).await?;
 
         for command in &self.config.post_install {
             let aqua_config = self.aqua_config();
@@ -90,7 +95,8 @@ impl Bootstrapper {
                 .await?;
         }
 
-        self.write_state(snapshot.tracked_files, true).await?;
+        self.write_state(snapshot.tracked_files, true, bootstrapped_tools)
+            .await?;
         Ok(())
     }
 
@@ -98,12 +104,14 @@ impl Bootstrapper {
         &self,
         tracked_files: Vec<FileFingerprint>,
         post_install_completed: bool,
+        bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
     ) -> Result<()> {
         let state = BootstrapState::new(
             self.config.aqua_version.clone(),
             self.relative_to_root(&self.aqua_executable()),
             tracked_files,
             post_install_completed,
+            bootstrapped_tools,
         );
 
         let cache_for_write = self.bootstrap_cache();
@@ -112,7 +120,7 @@ impl Bootstrapper {
         Ok(())
     }
 
-    async fn launch_app(&self) -> Result<i32> {
+    async fn launch_app(&self, state: &BootstrapState) -> Result<i32> {
         let mut command = self.config.app.command.clone();
         command.extend(self.app_args.iter().cloned());
 
@@ -122,8 +130,45 @@ impl Bootstrapper {
             &self.aqua_root(),
             &self.aqua_config(),
             &command,
+            &self.app_envs(state),
         )
         .await
+    }
+
+    async fn resolve_bootstrapped_tools(
+        &self,
+        aqua_executable: &Path,
+    ) -> Result<BTreeMap<String, BootstrappedTool>> {
+        let aqua_config = self.aqua_config();
+        let aqua_root = self.aqua_root();
+        let mut tools = BTreeMap::new();
+
+        for (env_name, tool) in &self.config.bootstrapped_tools {
+            let path =
+                aqua::exec::resolve_tool(aqua_executable, &aqua_config, &aqua_root, tool).await?;
+            tools.insert(
+                env_name.clone(),
+                BootstrappedTool {
+                    tool: tool.clone(),
+                    path,
+                },
+            );
+        }
+
+        Ok(tools)
+    }
+
+    fn app_envs(&self, state: &BootstrapState) -> Vec<(String, String)> {
+        state
+            .bootstrapped_tools
+            .iter()
+            .map(|(name, tool)| {
+                (
+                    format!("BOOTSTRAPPED_{name}"),
+                    tool.path.display().to_string(),
+                )
+            })
+            .collect()
     }
 
     async fn acquire_shared_lock(&self) -> Result<BootstrapLock> {
@@ -167,6 +212,7 @@ impl Bootstrapper {
         self.is_aqua_binary_cached(snapshot)
             && state.tracked_files == snapshot.tracked_files
             && state.post_install_completed
+            && self.bootstrapped_tools_match(state)
     }
 
     fn is_aqua_binary_cached(&self, snapshot: &Snapshot) -> bool {
@@ -178,6 +224,13 @@ impl Bootstrapper {
             && state.aqua_version == self.config.aqua_version
             && state.aqua_executable == self.relative_to_root(&self.aqua_executable())
             && snapshot.aqua_executable_exists
+    }
+
+    fn bootstrapped_tools_match(&self, state: &BootstrapState) -> bool {
+        state.bootstrapped_tools.len() == self.config.bootstrapped_tools.len()
+            && state.bootstrapped_tools.iter().all(|(env_name, tool)| {
+                self.config.bootstrapped_tools.get(env_name) == Some(&tool.tool)
+            })
     }
 
     fn aqua_config(&self) -> PathBuf {
@@ -206,7 +259,8 @@ mod tests {
     use super::{Bootstrapper, Snapshot};
     use crate::config::{AppCommand, Config};
     use crate::fingerprint::FileFingerprint;
-    use crate::state::BootstrapState;
+    use crate::state::{BootstrapState, BootstrappedTool};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     #[test]
@@ -251,6 +305,46 @@ mod tests {
         assert!(!bootstrapper.is_valid(&snapshot));
     }
 
+    #[test]
+    fn full_bootstrap_state_requires_current_bootstrapped_tools() {
+        let mut bootstrapper = bootstrapper();
+        bootstrapper
+            .config
+            .bootstrapped_tools
+            .insert("NODE_EXE".to_string(), "node".to_string());
+        let snapshot = Snapshot {
+            state: Some(state(&bootstrapper, vec![fingerprint("aqua.yaml", 1)])),
+            tracked_files: vec![fingerprint("aqua.yaml", 1)],
+            aqua_executable_exists: true,
+        };
+
+        assert!(!bootstrapper.is_valid(&snapshot));
+    }
+
+    #[test]
+    fn app_envs_use_cached_bootstrapped_tool_paths() {
+        let bootstrapper = bootstrapper();
+        let mut state = state(&bootstrapper, vec![]);
+        state.bootstrapped_tools.insert(
+            "NODE_EXE".to_string(),
+            BootstrappedTool {
+                tool: "node".to_string(),
+                path: absolute_root().join(".dv/aqua/bin/node"),
+            },
+        );
+
+        assert_eq!(
+            bootstrapper.app_envs(&state),
+            [(
+                "BOOTSTRAPPED_NODE_EXE".to_string(),
+                absolute_root()
+                    .join(".dv/aqua/bin/node")
+                    .display()
+                    .to_string(),
+            )]
+        );
+    }
+
     fn bootstrapper() -> Bootstrapper {
         let root = absolute_root();
         Bootstrapper::new(
@@ -263,6 +357,7 @@ mod tests {
                 bootstrap_cache: root.join(".dv").join("bootstrap"),
                 tracked_files: vec![root.join("aqua.yaml")],
                 post_install: vec![],
+                bootstrapped_tools: BTreeMap::new(),
                 app: AppCommand {
                     command: vec!["aqua".to_string(), "--version".to_string()],
                 },
@@ -277,6 +372,7 @@ mod tests {
             bootstrapper.relative_to_root(&bootstrapper.aqua_executable()),
             tracked_files,
             true,
+            BTreeMap::new(),
         )
     }
 

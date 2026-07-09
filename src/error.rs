@@ -40,6 +40,9 @@ pub enum Error {
     #[error("command was terminated by signal: {name}")]
     CommandTerminated { name: String },
 
+    #[error("command returned invalid output: {name}: {reason}")]
+    CommandOutput { name: String, reason: String },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
