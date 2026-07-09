@@ -8,6 +8,7 @@ fn state_round_trip_is_atomic_visible() {
     let dir = tempdir().unwrap();
     let state = BootstrapState::new(
         "v2.59.2".to_string(),
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
         ".dv/aqua/bin/aqua".into(),
         vec![FileFingerprint {
             path: "aqua.yaml".into(),

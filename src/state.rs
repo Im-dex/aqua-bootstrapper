@@ -21,6 +21,8 @@ pub struct BootstrappedTool {
 pub struct BootstrapState {
     pub schema: u32,
     pub aqua_version: String,
+    #[serde(default)]
+    pub aqua_sha256: String,
     pub aqua_executable: PathBuf,
     pub tracked_files: Vec<FileFingerprint>,
     #[serde(default = "default_post_install_completed")]
@@ -32,6 +34,7 @@ pub struct BootstrapState {
 impl BootstrapState {
     pub fn new(
         aqua_version: String,
+        aqua_sha256: String,
         aqua_executable: PathBuf,
         tracked_files: Vec<FileFingerprint>,
         post_install_completed: bool,
@@ -40,6 +43,7 @@ impl BootstrapState {
         Self {
             schema: STATE_SCHEMA,
             aqua_version,
+            aqua_sha256,
             aqua_executable,
             tracked_files,
             post_install_completed,

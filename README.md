@@ -52,8 +52,14 @@ fail the bootstrap with an invalid configuration error.
 
 ```json
 {
-  "schema": 1,
-  "aqua_version": "v2.59.2",
+  "schema": 2,
+  "aqua": {
+    "version": "v2.60.1",
+    "sha": {
+      "windows": "fc0a9f4087297ec16b62a709b4cfffafef321d39250787957e9953c5e1fe9316",
+      "linux": "d6f920201c71fb42881af51f8f63c3f06da778b38399248b2c777a288ebe3884"
+    }
+  },
   "aqua_config": "${PROJECT_ROOT}/aqua.yaml",
   "aqua_root": "${PROJECT_ROOT}/.dv/aqua",
   "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
@@ -86,18 +92,13 @@ example `C:/work/project/.dv/aqua`.
 
 ## Security
 
-The bootstrapper owns Aqua distribution details. The config only selects the Aqua
-version. Downloaded Aqua release assets are accepted only after GitHub Artifact
-Attestation verification through `sigstore-verification`.
+The bootstrapper owns Aqua distribution details. The configuration pins the Aqua
+version and SHA-256 digest for each supported operating system. A downloaded
+release asset is extracted only when its SHA-256 matches `aqua.sha.windows` or
+`aqua.sha.linux` for the current platform.
 
-The policy is fixed in code:
-
-- repository: `aquaproj/aqua`
-- issuer: GitHub Actions OIDC
-- ref: `refs/tags/<aqua_version>`
-- subject digest: SHA-256 of the downloaded release asset
-
-No fallback verification mode exists.
+The current schema supports `x86_64` Linux and Windows. Update both the version
+and the corresponding pinned hashes together when upgrading Aqua.
 
 ## State
 
@@ -108,6 +109,9 @@ retried without downloading and verifying Aqua again. `aqua install` still runs
 on every bootstrap retry because Aqua tracks its own package cache freshness.
 The application is only launched after `post_install` has completed
 successfully.
+
+The state records the pinned Aqua SHA-256. Changing either `aqua.version` or
+the current platform's hash invalidates the cached binary.
 
 Only metadata fingerprints are tracked:
 

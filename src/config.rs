@@ -7,12 +7,12 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
-pub const CONFIG_SCHEMA: u32 = 1;
+pub const CONFIG_SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub schema: u32,
-    pub aqua_version: String,
+    pub aqua: AquaConfig,
     pub aqua_config: PathBuf,
     pub aqua_root: PathBuf,
     pub bootstrap_cache: PathBuf,
@@ -22,6 +22,28 @@ pub struct Config {
     #[serde(default)]
     pub bootstrapped_tools: BTreeMap<String, String>,
     pub app: AppCommand,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AquaConfig {
+    pub version: String,
+    pub sha: AquaSha,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AquaSha {
+    pub windows: String,
+    pub linux: String,
+}
+
+impl AquaSha {
+    pub fn for_current_platform(&self) -> Result<&str> {
+        match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("windows", "x86_64") => Ok(&self.windows),
+            ("linux", "x86_64") => Ok(&self.linux),
+            (os, arch) => Err(Error::UnsupportedPlatform(format!("{os}/{arch}"))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,7 +76,9 @@ impl Config {
             )));
         }
 
-        require_non_empty("aqua_version", &self.aqua_version)?;
+        require_non_empty("aqua.version", &self.aqua.version)?;
+        require_sha256("aqua.sha.windows", &self.aqua.sha.windows)?;
+        require_sha256("aqua.sha.linux", &self.aqua.sha.linux)?;
         require_absolute_path("aqua_config", &self.aqua_config)?;
         require_absolute_path("aqua_root", &self.aqua_root)?;
         require_absolute_path("bootstrap_cache", &self.bootstrap_cache)?;
@@ -102,6 +126,15 @@ fn require_command(field: &str, command: &[String]) -> Result<()> {
     if command.is_empty() || command.iter().any(|part| part.trim().is_empty()) {
         return Err(Error::InvalidConfig(format!(
             "{field} must contain non-empty arguments"
+        )));
+    }
+    Ok(())
+}
+
+fn require_sha256(field: &str, value: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::InvalidConfig(format!(
+            "{field} must be a 64-character SHA-256 hex digest"
         )));
     }
     Ok(())
@@ -222,8 +255,14 @@ mod tests {
 
         let config = parse_config(
             r#"{
-                "schema": 1,
-                "aqua_version": "v2.59.2",
+                "schema": 2,
+                "aqua": {
+                    "version": "v2.59.2",
+                    "sha": {
+                        "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                        "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+                    }
+                },
                 "aqua_config": "${PROJECT_ROOT}/aqua.yaml",
                 "aqua_root": "${PROJECT_ROOT}/.dv/aqua",
                 "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
@@ -236,6 +275,7 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(config.aqua.version, "v2.59.2");
         assert_eq!(
             config.aqua_config,
             std::path::PathBuf::from(format!("{project_root}/aqua.yaml"))
@@ -302,8 +342,14 @@ mod tests {
         };
         let config = format!(
             r#"{{
-                "schema": 1,
-                "aqua_version": "v2.59.2",
+                "schema": 2,
+                "aqua": {{
+                    "version": "v2.59.2",
+                    "sha": {{
+                        "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                        "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+                    }}
+                }},
                 "aqua_config": "{project_root}/aqua.yaml",
                 "aqua_root": "{project_root}/.dv/aqua",
                 "bootstrap_cache": "{project_root}/.dv/bootstrap",
@@ -317,5 +363,34 @@ mod tests {
             .to_string();
 
         assert!(error.contains("bootstrapped_tools key"));
+    }
+
+    #[test]
+    fn rejects_invalid_aqua_sha256() {
+        let project_root = if cfg!(windows) {
+            "C:/work/project"
+        } else {
+            "/work/project"
+        };
+        let config = format!(
+            r#"{{
+                "schema": 2,
+                "aqua": {{
+                    "version": "v2.59.2",
+                    "sha": {{"windows": "not-a-digest", "linux": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+                }},
+                "aqua_config": "{project_root}/aqua.yaml",
+                "aqua_root": "{project_root}/.dv/aqua",
+                "bootstrap_cache": "{project_root}/.dv/bootstrap",
+                "tracked_files": ["{project_root}/aqua.yaml"],
+                "app": {{"command": ["uv", "run", "dv"]}}
+            }}"#,
+        );
+
+        let error = parse_config(&config, &HashMap::new())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("aqua.sha.windows"));
     }
 }

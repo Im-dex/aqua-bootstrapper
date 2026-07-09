@@ -12,8 +12,8 @@ fn reads_valid_config() {
     fs::write(
         &path,
         json!({
-            "schema": 1,
-            "aqua_version": "v2.59.2",
+            "schema": 2,
+            "aqua": aqua_config(),
             "aqua_config": json_path(&dir.path().join("aqua.yaml")),
             "aqua_root": json_path(&dir.path().join(".dv/aqua")),
             "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
@@ -27,8 +27,8 @@ fn reads_valid_config() {
 
     let parsed = Config::read(&path).unwrap();
 
-    assert_eq!(parsed.schema, 1);
-    assert_eq!(parsed.aqua_version, "v2.59.2");
+    assert_eq!(parsed.schema, 2);
+    assert_eq!(parsed.aqua.version, "v2.59.2");
     assert_eq!(parsed.tracked_files.len(), 1);
 }
 
@@ -38,16 +38,40 @@ fn rejects_relative_paths() {
     let path = dir.path().join("bootstrap.json");
     fs::write(
         &path,
-        r#"{
-            "schema": 1,
-            "aqua_version": "v2.59.2",
+        json!({
+            "schema": 2,
+            "aqua": aqua_config(),
             "aqua_config": "aqua.yaml",
             "aqua_root": "/tmp/project/.dv/aqua",
             "bootstrap_cache": "/tmp/project/.dv/bootstrap",
             "tracked_files": ["/tmp/project/aqua.yaml"],
             "post_install": [],
             "app": {"command": ["uv", "run", "dv"]}
-        }"#,
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    assert!(Config::read(&path).is_err());
+}
+
+#[test]
+fn rejects_legacy_schema_one_config() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bootstrap.json");
+    fs::write(
+        &path,
+        json!({
+            "schema": 1,
+            "aqua_version": "v2.59.2",
+            "aqua_config": json_path(&dir.path().join("aqua.yaml")),
+            "aqua_root": json_path(&dir.path().join(".dv/aqua")),
+            "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
+            "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
+            "post_install": [],
+            "app": {"command": ["uv", "run", "dv"]}
+        })
+        .to_string(),
     )
     .unwrap();
 
@@ -61,8 +85,8 @@ fn rejects_parent_dir_paths() {
     fs::write(
         &path,
         json!({
-            "schema": 1,
-            "aqua_version": "v2.59.2",
+            "schema": 2,
+            "aqua": aqua_config(),
             "aqua_config": json_path(&dir.path().join("..").join("aqua.yaml")),
             "aqua_root": json_path(&dir.path().join(".dv/aqua")),
             "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
@@ -90,4 +114,14 @@ fn read_error_includes_config_path() {
 
 fn json_path(path: &Path) -> String {
     path.display().to_string()
+}
+
+fn aqua_config() -> serde_json::Value {
+    json!({
+        "version": "v2.59.2",
+        "sha": {
+            "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+        }
+    })
 }

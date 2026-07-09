@@ -28,8 +28,12 @@ pub enum Error {
     #[error("download failed: {0}")]
     Download(String),
 
-    #[error("attestation verification failed: {0}")]
-    Attestation(String),
+    #[error("Aqua release asset checksum mismatch for {asset}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        asset: String,
+        expected: String,
+        actual: String,
+    },
 
     #[error("archive extraction failed: {0}")]
     Archive(String),

@@ -3,7 +3,6 @@ mod bootstrap;
 mod config;
 mod error;
 mod fingerprint;
-mod github;
 mod lock;
 mod process;
 mod state;
