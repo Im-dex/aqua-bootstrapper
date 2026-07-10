@@ -63,29 +63,33 @@ mod linux {
 
     #[cfg(test)]
     mod tests {
+        use std::io;
+        use std::os::unix::process::CommandExt;
+
         use super::{
             PR_GET_PDEATHSIG, SIGTERM, configure_child, configure_child_for_parent, prctl,
         };
         use tokio::process::Command;
 
-        const HELPER_ENV: &str = "AQUA_BOOTSTRAPPER_PDEATHSIG_TEST_HELPER";
-        const TEST_NAME: &str =
-            "process_containment::linux::tests::child_receives_parent_death_signal";
-
         #[tokio::test]
         async fn child_receives_parent_death_signal() {
-            if std::env::var_os(HELPER_ENV).is_some() {
-                let mut signal = 0;
-                let result = unsafe { prctl(PR_GET_PDEATHSIG, &raw mut signal) };
-
-                assert_eq!(result, 0);
-                assert_eq!(signal, SIGTERM);
-                return;
-            }
-
-            let mut command = Command::new(std::env::current_exe().unwrap());
-            command.args(["--exact", TEST_NAME]).env(HELPER_ENV, "1");
+            let mut command = Command::new("/bin/true");
             configure_child(&mut command);
+            unsafe {
+                command.as_std_mut().pre_exec(|| {
+                    let mut signal = 0;
+                    if prctl(PR_GET_PDEATHSIG, &raw mut signal) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if signal != SIGTERM {
+                        return Err(io::Error::other(format!(
+                            "expected parent death signal {SIGTERM}, got {signal}"
+                        )));
+                    }
+
+                    Ok(())
+                });
+            }
 
             assert!(command.status().await.unwrap().success());
         }
