@@ -35,12 +35,13 @@ mod linux {
     const ESRCH: c_int = 3;
 
     unsafe extern "C" {
+        fn getpid() -> c_int;
         fn getppid() -> c_int;
         fn prctl(option: c_int, ...) -> c_int;
     }
 
     pub fn configure_child(command: &mut Command) {
-        let expected_parent = unsafe { getppid() };
+        let expected_parent = unsafe { getpid() };
         configure_child_for_parent(command, expected_parent);
     }
 
