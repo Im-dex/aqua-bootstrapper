@@ -1,21 +1,21 @@
 {
-  "schema": 2,
+  "schema": 3,
   "aqua": {
     "version": "v2.60.1",
     "sha": {
       "windows": "fc0a9f4087297ec16b62a709b4cfffafef321d39250787957e9953c5e1fe9316",
       "linux": "d6f920201c71fb42881af51f8f63c3f06da778b38399248b2c777a288ebe3884"
     },
-    "config": "${PROJECT_ROOT}/aqua.yaml",
-    "root": "${PROJECT_ROOT}/.dv/aqua"
+    "config": "{{ env.PROJECT_ROOT }}/aqua.yaml",
+    "root": "{{ env.PROJECT_ROOT }}/.dv/aqua"
   },
-  "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
+  "bootstrap_cache": "{{ env.PROJECT_ROOT }}/.dv/bootstrap",
   "tracked_files": [
-    "${PROJECT_ROOT}/aqua.yaml",
-    "${PROJECT_ROOT}/aqua-checksums.json",
-    "${PROJECT_ROOT}/pyproject.toml",
-    "${PROJECT_ROOT}/uv.lock",
-    "${PROJECT_ROOT}/config/**/*.toml"
+    "{{ env.PROJECT_ROOT }}/aqua.yaml",
+    "{{ env.PROJECT_ROOT }}/aqua-checksums.json",
+    "{{ env.PROJECT_ROOT }}/pyproject.toml",
+    "{{ env.PROJECT_ROOT }}/uv.lock",
+    "{{ env.PROJECT_ROOT }}/config/**/*.toml"
   ],
   "post_install": [
     {

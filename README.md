@@ -48,35 +48,38 @@ The first element of `app.command` must be an Aqua-managed tool. After
 `aqua install`, the bootstrapper resolves it with `aqua which`, stores the
 result in state, and starts that executable directly on later launches.
 
-The configuration file supports `${VAR}` substitutions before JSON parsing.
-Values are read from the bootstrapper process environment. Missing variables
-fail the bootstrap with an invalid configuration error.
+The configuration file is rendered as a [MiniJinja](https://docs.rs/minijinja/)
+template before JSON parsing. Environment variables are available through the
+`env` object, for example `{{ env.PROJECT_ROOT }}`. Substitutions must remain
+inside a JSON string. Missing variables fail the bootstrap with an invalid
+configuration error. The global `os` contains the current platform identifier,
+such as `windows` or `linux`, and can be used in conditional blocks.
 
 ## Configuration
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "aqua": {
     "version": "v2.60.1",
     "sha": {
       "windows": "fc0a9f4087297ec16b62a709b4cfffafef321d39250787957e9953c5e1fe9316",
       "linux": "d6f920201c71fb42881af51f8f63c3f06da778b38399248b2c777a288ebe3884"
     },
-    "config": "${PROJECT_ROOT}/aqua.yaml",
-    "root": "${PROJECT_ROOT}/.dv/aqua"
+    "config": "{{ env.PROJECT_ROOT }}/aqua.yaml",
+    "root": "{{ env.PROJECT_ROOT }}/.dv/aqua"
   },
-  "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
+  "bootstrap_cache": "{{ env.PROJECT_ROOT }}/.dv/bootstrap",
   "tracked_files": [
-    "${PROJECT_ROOT}/aqua.yaml",
-    "${PROJECT_ROOT}/aqua-checksums.json",
-    "${PROJECT_ROOT}/pyproject.toml",
-    "${PROJECT_ROOT}/uv.lock",
-    "${PROJECT_ROOT}/config/**/*.toml"
+    "{{ env.PROJECT_ROOT }}/aqua.yaml",
+    "{{ env.PROJECT_ROOT }}/aqua-checksums.json",
+    "{{ env.PROJECT_ROOT }}/pyproject.toml",
+    "{{ env.PROJECT_ROOT }}/uv.lock",
+    "{{ env.PROJECT_ROOT }}/config/**/*.toml"
   ],
   "post_install": [
     {
-      "name": "Python environment",
+      "name": "{% if os == 'windows' %}Python environment on Windows{% else %}Python environment on Linux{% endif %}",
       "command": ["uv", "sync", "--locked"]
     }
   ],
@@ -128,7 +131,7 @@ Only metadata fingerprints are tracked:
 
 `tracked_files` entries must include every input that should invalidate the
 bootstrap state, must resolve to absolute paths, and may use glob patterns such
-as `${PROJECT_ROOT}/config/**/*.toml`. Glob patterns must match at least one
+as `{{ env.PROJECT_ROOT }}/config/**/*.toml`. Glob patterns must match at least one
 file. Matched files are sorted and deduplicated before they are stored in state.
 The `bootstrapped_tools` mapping is also compared with state so changing an
 environment-variable name or tool name refreshes the cached path. Changing the

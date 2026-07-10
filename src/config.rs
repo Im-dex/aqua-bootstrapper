@@ -1,13 +1,13 @@
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use minijinja::{Environment, UndefinedBehavior};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
-pub const CONFIG_SCHEMA: u32 = 2;
+pub const CONFIG_SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -109,7 +109,7 @@ impl Config {
 }
 
 fn parse_config(raw: &str, envs: &HashMap<String, String>) -> Result<Config> {
-    let raw = substitute_env(raw, envs)?;
+    let raw = render_template(raw, envs)?;
     let config: Config = serde_json::from_str(&raw)?;
     config.validate()?;
     Ok(config)
@@ -140,64 +140,29 @@ fn require_sha256(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn substitute_env<'a>(value: &'a str, envs: &HashMap<String, String>) -> Result<Cow<'a, str>> {
-    let Some(mut start) = value.find("${") else {
-        return Ok(Cow::Borrowed(value));
-    };
-    let mut output = String::with_capacity(value.len());
-    let mut rest = value;
+fn render_template(value: &str, envs: &HashMap<String, String>) -> Result<String> {
+    let mut environment = Environment::new();
+    environment.set_undefined_behavior(UndefinedBehavior::Strict);
 
-    loop {
-        output.push_str(&rest[..start]);
-        let after_start = &rest[start + 2..];
-        let Some(end) = after_start.find('}') else {
-            return Err(Error::InvalidConfig(
-                "config contains unclosed environment substitution".to_string(),
-            ));
-        };
+    let template_env = envs
+        .iter()
+        .map(|(name, value)| (name.as_str(), json_string_fragment(value)))
+        .collect::<BTreeMap<_, _>>();
+    environment.add_global("env", template_env);
+    environment.add_global("os", std::env::consts::OS);
 
-        let name = &after_start[..end];
-        require_env_name(name)?;
-        let replacement = envs.get(name).ok_or_else(|| {
-            Error::InvalidConfig(format!(
-                "environment variable is not set for config substitution: {name}"
-            ))
-        })?;
-        output.push_str(&json_string_fragment(replacement));
-        rest = &after_start[end + 1..];
+    let template = environment.template_from_str(value).map_err(|error| {
+        Error::InvalidConfig(format!("failed to parse config template: {error}"))
+    })?;
 
-        let Some(next_start) = rest.find("${") else {
-            break;
-        };
-        start = next_start;
-    }
-
-    output.push_str(rest);
-    Ok(Cow::Owned(output))
+    template
+        .render(())
+        .map_err(|error| Error::InvalidConfig(format!("failed to render config template: {error}")))
 }
 
 fn json_string_fragment(value: &str) -> String {
     let encoded = serde_json::to_string(value).expect("serializing a string cannot fail");
     encoded[1..encoded.len() - 1].to_string()
-}
-
-fn require_env_name(name: &str) -> Result<()> {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return Err(Error::InvalidConfig(
-            "environment substitution variable name must not be empty".to_string(),
-        ));
-    };
-
-    if !(first == '_' || first.is_ascii_alphabetic())
-        || chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric()))
-    {
-        return Err(Error::InvalidConfig(format!(
-            "invalid environment substitution variable name: {name}"
-        )));
-    }
-
-    Ok(())
 }
 
 fn require_bootstrapped_tool_env_name(name: &str) -> Result<()> {
@@ -241,7 +206,7 @@ fn require_absolute_path(field: &str, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, parse_config, substitute_env};
+    use super::{Config, parse_config, render_template};
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
@@ -260,18 +225,18 @@ mod tests {
 
         let config = parse_config(
             r#"{
-                "schema": 2,
+                "schema": 3,
                 "aqua": {
                     "version": "v2.59.2",
                     "sha": {
                         "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                         "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
                     },
-                    "config": "${PROJECT_ROOT}/aqua.yaml",
-                    "root": "${PROJECT_ROOT}/.dv/aqua"
+                    "config": "{{ env.PROJECT_ROOT }}/aqua.yaml",
+                    "root": "{{ env.PROJECT_ROOT }}/.dv/aqua"
                 },
-                "bootstrap_cache": "${PROJECT_ROOT}/.dv/bootstrap",
-                "tracked_files": ["${PROJECT_ROOT}/aqua.yaml", "${PROJECT_ROOT}/config/**/*.toml"],
+                "bootstrap_cache": "{{ env.PROJECT_ROOT }}/.dv/bootstrap",
+                "tracked_files": ["{{ env.PROJECT_ROOT }}/aqua.yaml", "{{ env.PROJECT_ROOT }}/config/**/*.toml"],
                 "post_install": [{"name": "sync", "command": ["uv", "sync", "--locked"]}],
                 "bootstrapped_tools": {"NODE_EXE": "node"},
                 "app": {"command": ["uv", "run", "dv"]}
@@ -307,11 +272,14 @@ mod tests {
     }
 
     #[test]
-    fn substitutes_env_in_config_text() {
+    fn renders_environment_variables_in_config_template() {
         let envs = HashMap::from([("PROJECT_ROOT".to_string(), "C:\\work\\project".to_string())]);
 
-        let config =
-            substitute_env(r#"{"aqua":{"config":"${PROJECT_ROOT}/aqua.yaml"}}"#, &envs).unwrap();
+        let config = render_template(
+            r#"{"aqua":{"config":"{{ env.PROJECT_ROOT }}/aqua.yaml"}}"#,
+            &envs,
+        )
+        .unwrap();
 
         assert_eq!(
             config,
@@ -320,25 +288,42 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_config_env_values() {
-        let error = substitute_env(
-            r#"{"aqua":{"config":"${MISSING_ENV}/aqua.yaml"}}"#,
+    fn renders_platform_conditional_in_config_template() {
+        let rendered = render_template(
+            r#"{"name":"{% if os == 'windows' %}windows{% else %}other{% endif %}"}"#,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered,
+            if cfg!(windows) {
+                r#"{"name":"windows"}"#
+            } else {
+                r#"{"name":"other"}"#
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_missing_config_template_values() {
+        let error = render_template(
+            r#"{"aqua":{"config":"{{ env.MISSING_ENV }}/aqua.yaml"}}"#,
             &HashMap::new(),
         )
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("environment variable is not set"));
-        assert!(error.contains("MISSING_ENV"));
+        assert!(error.contains("failed to render config template"));
     }
 
     #[test]
-    fn rejects_unclosed_config_env_substitution() {
-        let error = substitute_env("${PROJECT_ROOT", &HashMap::new())
+    fn rejects_invalid_config_template() {
+        let error = render_template("{{ env.PROJECT_ROOT", &HashMap::new())
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("unclosed environment substitution"));
+        assert!(error.contains("failed to parse config template"));
     }
 
     #[test]
@@ -350,7 +335,7 @@ mod tests {
         };
         let config = format!(
             r#"{{
-                "schema": 2,
+                "schema": 3,
                 "aqua": {{
                     "version": "v2.59.2",
                     "sha": {{
@@ -382,7 +367,7 @@ mod tests {
         };
         let config = format!(
             r#"{{
-                "schema": 2,
+                "schema": 3,
                 "aqua": {{
                     "version": "v2.59.2",
                     "sha": {{"windows": "not-a-digest", "linux": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
@@ -409,7 +394,7 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 2,
+                "schema": 3,
                 "aqua": aqua_config(&dir.path().join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
@@ -422,7 +407,7 @@ mod tests {
 
         let parsed = Config::read(&path).unwrap();
 
-        assert_eq!(parsed.schema, 2);
+        assert_eq!(parsed.schema, 3);
         assert_eq!(parsed.aqua.version, "v2.59.2");
         assert_eq!(parsed.tracked_files.len(), 1);
     }
@@ -434,7 +419,7 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 2,
+                "schema": 3,
                 "aqua": aqua_config(Path::new("aqua.yaml"), Path::new("/tmp/project/.dv/aqua")),
                 "bootstrap_cache": "/tmp/project/.dv/bootstrap",
                 "tracked_files": ["/tmp/project/aqua.yaml"],
@@ -449,14 +434,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_legacy_schema_one_config() {
+    fn rejects_legacy_schema_two_config() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bootstrap.json");
         fs::write(
             &path,
             json!({
-                "schema": 1,
-                "aqua_version": "v2.59.2",
+                "schema": 2,
+                "aqua": aqua_config(&dir.path().join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [],
@@ -476,7 +461,7 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 2,
+                "schema": 3,
                 "aqua": aqua_config(&dir.path().join("..").join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],

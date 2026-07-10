@@ -449,7 +449,7 @@ mod tests {
         Bootstrapper::new(
             root.clone(),
             Config {
-                schema: 2,
+                schema: 3,
                 aqua: AquaConfig {
                     version: "v2.59.2".to_string(),
                     sha: AquaSha {
