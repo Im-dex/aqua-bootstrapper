@@ -5,6 +5,7 @@ mod error;
 mod fingerprint;
 mod lock;
 mod process;
+mod process_containment;
 mod state;
 mod util;
 
@@ -20,6 +21,7 @@ pub use crate::error::{Error, Result};
 
 pub async fn run(config_path: PathBuf, app_args: Vec<String>) -> Result<i32> {
     init_tracing();
+    process_containment::init()?;
 
     let config_path = accessible_absolute_path(config_path)?;
     let root = config_path

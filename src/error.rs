@@ -47,6 +47,12 @@ pub enum Error {
     #[error("command returned invalid output: {name}: {reason}")]
     CommandOutput { name: String, reason: String },
 
+    #[error("process containment setup failed during {operation}: {source}")]
+    ProcessContainment {
+        operation: &'static str,
+        source: std::io::Error,
+    },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

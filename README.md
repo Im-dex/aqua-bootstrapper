@@ -24,6 +24,26 @@ runs `uv run dv status --verbose` directly.
 
 The application exit code is returned unchanged.
 
+## Process lifetime
+
+On Windows, the bootstrapper places itself in a Job Object configured with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. If the bootstrapper exits or is terminated
+unexpectedly, Windows terminates all processes in that job, including descendants
+of the launched application.
+
+On Linux, every command started directly by the bootstrapper uses
+`PR_SET_PDEATHSIG` and receives `SIGTERM` if the bootstrapper dies. Linux does not
+propagate this setting to descendants. Applications that start processes which
+must not outlive them should launch those processes through
+[`pdeathsig`](https://github.com/Im-dex/pdeathsig):
+
+```sh
+pdeathsig <command> [args...]
+```
+
+Repeating this rule at each process boundary keeps the parent-death behavior
+throughout the application process tree.
+
 ## Application environment
 
 The launched application receives the Aqua paths used by the bootstrapper:

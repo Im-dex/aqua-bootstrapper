@@ -12,6 +12,7 @@ pub async fn run_foreground(
     envs: Option<&[(String, String)]>,
 ) -> Result<i32> {
     let mut command = Command::new(executable);
+    crate::process_containment::configure_child(&mut command);
     command
         .args(args)
         .stdin(Stdio::inherit())
@@ -41,6 +42,7 @@ pub async fn run_app(
     envs: Option<&[(String, String)]>,
 ) -> Result<i32> {
     let mut command = Command::new(executable);
+    crate::process_containment::configure_child(&mut command);
     command
         .args(args)
         .stdin(Stdio::inherit())
@@ -66,6 +68,7 @@ pub async fn run_capture_stdout(
     envs: Option<&[(String, String)]>,
 ) -> Result<String> {
     let mut command = Command::new(executable);
+    crate::process_containment::configure_child(&mut command);
     command
         .args(args)
         .stdin(Stdio::null())
