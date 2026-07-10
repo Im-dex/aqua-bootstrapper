@@ -29,6 +29,8 @@ pub struct BootstrapState {
     pub post_install_completed: bool,
     #[serde(default)]
     pub bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
+    #[serde(default)]
+    pub app_tool: Option<BootstrappedTool>,
 }
 
 impl BootstrapState {
@@ -39,6 +41,7 @@ impl BootstrapState {
         tracked_files: Vec<FileFingerprint>,
         post_install_completed: bool,
         bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
+        app_tool: Option<BootstrappedTool>,
     ) -> Self {
         Self {
             schema: STATE_SCHEMA,
@@ -48,6 +51,7 @@ impl BootstrapState {
             tracked_files,
             post_install_completed,
             bootstrapped_tools,
+            app_tool,
         }
     }
 
@@ -111,6 +115,7 @@ mod tests {
             }],
             false,
             BTreeMap::new(),
+            None,
         );
 
         write_atomic(dir.path(), &state).unwrap();
@@ -134,5 +139,6 @@ mod tests {
 
         assert!(state.post_install_completed);
         assert!(state.bootstrapped_tools.is_empty());
+        assert!(state.app_tool.is_none());
     }
 }

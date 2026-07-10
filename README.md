@@ -1,8 +1,8 @@
 # aqua-bootstrapper
 
 Small standalone Rust bootstrapper for installing and verifying Aqua, running
-`aqua install`, running post-install commands, and launching the main app through
-`aqua exec`.
+`aqua install`, running post-install commands, and launching the main app
+directly.
 
 ## Usage
 
@@ -20,7 +20,7 @@ aqua-bootstrapper --config bootstrap.json -- status --verbose
 
 These arguments are appended to `app.command` from the configuration. For
 example, with `app.command` set to `["uv", "run", "dv"]`, the command above
-runs `uv run dv status --verbose` through `aqua exec`.
+runs `uv run dv status --verbose` directly.
 
 The application exit code is returned unchanged.
 
@@ -43,6 +43,10 @@ underscores. After `aqua install`, the bootstrapper resolves every tool with
 `aqua which` and launches the app with `BOOTSTRAPPED_<KEY>` set to the cached
 absolute path. For example, `"NODE_EXE": "node"` sets
 `BOOTSTRAPPED_NODE_EXE`.
+
+The first element of `app.command` must be an Aqua-managed tool. After
+`aqua install`, the bootstrapper resolves it with `aqua which`, stores the
+result in state, and starts that executable directly on later launches.
 
 The configuration file supports `${VAR}` substitutions before JSON parsing.
 Values are read from the bootstrapper process environment. Missing variables
@@ -127,6 +131,7 @@ bootstrap state, must resolve to absolute paths, and may use glob patterns such
 as `${PROJECT_ROOT}/config/**/*.toml`. Glob patterns must match at least one
 file. Matched files are sorted and deduplicated before they are stored in state.
 The `bootstrapped_tools` mapping is also compared with state so changing an
-environment-variable name or tool name refreshes the cached path.
+environment-variable name or tool name refreshes the cached path. Changing the
+first element of `app.command` also refreshes its cached executable path.
 
 Content hashes are intentionally not used for fast-path invalidation.

@@ -37,21 +37,6 @@ pub async fn run_install(aqua: &Path, aqua_config: &Path, aqua_root: &Path) -> R
         .map(|_| ())
 }
 
-pub async fn run_exec(
-    name: &str,
-    aqua: &Path,
-    aqua_root: &Path,
-    aqua_config: &Path,
-    command: &[String],
-    app_envs: &[(String, String)],
-) -> Result<i32> {
-    let mut envs = aqua_envs(aqua, aqua_config, aqua_root);
-    envs.push(("AQUA_DISABLE_LAZY_INSTALL".to_string(), "true".to_string()));
-    envs.extend(app_envs.iter().cloned());
-    let args = exec_args(command);
-    process::run_app(name, aqua, &args, Some(&envs)).await
-}
-
 pub async fn resolve_tool(
     aqua: &Path,
     aqua_config: &Path,
@@ -91,8 +76,8 @@ mod tests {
     #[test]
     fn exec_args_pass_command_after_separator() {
         assert_eq!(
-            exec_args(&["uv".to_string(), "run".to_string(), "dv".to_string()]),
-            ["exec", "--", "uv", "run", "dv"]
+            exec_args(&["uv".to_string(), "sync".to_string()]),
+            ["exec", "--", "uv", "sync"]
         );
     }
 
