@@ -139,14 +139,9 @@ impl Bootstrapper {
             .expect("valid state contains a resolved app tool");
         let mut args = self.config.app.command[1..].to_vec();
         args.extend(self.app_args.iter().cloned());
+        let envs = self.app_envs(state)?;
 
-        crate::process::run_app(
-            "application",
-            &app_tool.path,
-            &args,
-            Some(&self.app_envs(state)),
-        )
-        .await
+        crate::process::run_app("application", &app_tool.path, &args, Some(&envs)).await
     }
 
     async fn resolve_bootstrapped_tools(
@@ -185,7 +180,7 @@ impl Bootstrapper {
         Ok(BootstrappedTool { tool, path })
     }
 
-    fn app_envs(&self, state: &BootstrapState) -> Vec<(String, String)> {
+    fn app_envs(&self, state: &BootstrapState) -> Result<Vec<(String, String)>> {
         let mut envs = aqua::exec::aqua_envs(
             &self.aqua_executable(),
             &self.aqua_config(),
@@ -197,7 +192,11 @@ impl Bootstrapper {
                 tool.path.display().to_string(),
             )
         }));
-        envs
+        envs.push((
+            crate::process_containment::PROCESS_TEMPLATE_ENV.to_string(),
+            crate::process_containment::command_template_json()?,
+        ));
+        Ok(envs)
     }
 
     async fn acquire_shared_lock(&self) -> Result<BootstrapLock> {
@@ -419,7 +418,7 @@ mod tests {
         );
 
         assert_eq!(
-            bootstrapper.app_envs(&state),
+            bootstrapper.app_envs(&state).unwrap(),
             [
                 (
                     "AQUA_EXE".to_string(),
@@ -439,6 +438,10 @@ mod tests {
                         .join(".dv/aqua/bin/node")
                         .display()
                         .to_string(),
+                ),
+                (
+                    "PROCESS_CONTAINMENT_TEMPLATE_JSON".to_string(),
+                    crate::process_containment::command_template_json().unwrap(),
                 ),
             ]
         );

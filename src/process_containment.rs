@@ -1,6 +1,66 @@
+use std::ffi::OsString;
+
 use tokio::process::Command;
 
 use crate::Result;
+
+pub const PROCESS_TEMPLATE_ENV: &str = "PROCESS_CONTAINMENT_TEMPLATE_JSON";
+#[cfg(target_os = "linux")]
+pub const PARENT_PID_PLACEHOLDER: &str = "{parent_pid}";
+
+pub fn command_template_json() -> Result<String> {
+    #[cfg(target_os = "linux")]
+    let template = vec![
+        std::env::current_exe()?.display().to_string(),
+        "pdeathsig".to_string(),
+        "--parent-pid".to_string(),
+        PARENT_PID_PLACEHOLDER.to_string(),
+        "--".to_string(),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    let template: Vec<String> = Vec::new();
+
+    Ok(serde_json::to_string(&template)?)
+}
+
+#[cfg(test)]
+mod command_template_tests {
+    #[cfg(target_os = "linux")]
+    use super::PARENT_PID_PLACEHOLDER;
+    use super::command_template_json;
+
+    #[test]
+    fn command_template_is_a_json_argument_array() {
+        let template: Vec<String> =
+            serde_json::from_str(&command_template_json().unwrap()).unwrap();
+
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            template,
+            [
+                std::env::current_exe().unwrap().display().to_string(),
+                "pdeathsig".to_string(),
+                "--parent-pid".to_string(),
+                PARENT_PID_PLACEHOLDER.to_string(),
+                "--".to_string(),
+            ]
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert!(template.is_empty());
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn exec_with_parent_death_signal(parent_pid: u32, command: &[OsString]) -> Result<i32> {
+    linux::exec_with_parent_death_signal(parent_pid, command)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn exec_with_parent_death_signal(_parent_pid: u32, _command: &[OsString]) -> Result<i32> {
+    Err(crate::Error::UnsupportedPlatform(
+        "pdeathsig is only supported on Linux".to_string(),
+    ))
+}
 
 #[cfg(windows)]
 pub fn init() -> Result<()> {
@@ -22,11 +82,15 @@ pub fn configure_child(_command: &mut Command) {}
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::ffi::OsString;
     use std::io;
     use std::os::raw::c_int;
     use std::os::unix::process::CommandExt;
+    use std::process::Command as StdCommand;
 
     use tokio::process::Command;
+
+    use crate::{Error, Result};
 
     const PR_SET_PDEATHSIG: c_int = 1;
     #[cfg(test)]
@@ -45,20 +109,55 @@ mod linux {
         configure_child_for_parent(command, expected_parent);
     }
 
+    pub fn exec_with_parent_death_signal(parent_pid: u32, command: &[OsString]) -> Result<i32> {
+        let Some((program, args)) = command.split_first() else {
+            return Err(Error::ProcessContainment {
+                operation: "executing the pdeathsig command",
+                source: io::Error::new(io::ErrorKind::InvalidInput, "command is empty"),
+            });
+        };
+
+        let expected_parent = c_int::try_from(parent_pid)
+            .ok()
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| Error::ProcessContainment {
+                operation: "configuring the pdeathsig process",
+                source: io::Error::new(io::ErrorKind::InvalidInput, "parent PID is invalid"),
+            })?;
+        configure_current_process(expected_parent).map_err(|source| Error::ProcessContainment {
+            operation: "configuring the pdeathsig process",
+            source,
+        })?;
+
+        let mut child = StdCommand::new(program);
+        child.args(args);
+        let source = child.exec();
+        Err(Error::ProcessContainment {
+            operation: "executing the pdeathsig command",
+            source,
+        })
+    }
+
     fn configure_child_for_parent(command: &mut Command, expected_parent: c_int) {
         unsafe {
-            command.as_std_mut().pre_exec(move || {
-                if prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-
-                if getppid() != expected_parent {
-                    return Err(io::Error::from_raw_os_error(ESRCH));
-                }
-
-                Ok(())
-            });
+            command
+                .as_std_mut()
+                .pre_exec(move || configure_current_process(expected_parent));
         }
+    }
+
+    fn configure_current_process(expected_parent: c_int) -> io::Result<()> {
+        unsafe {
+            if prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            if getppid() != expected_parent {
+                return Err(io::Error::from_raw_os_error(ESRCH));
+            }
+        }
+
+        Ok(())
     }
 
     #[cfg(test)]

@@ -1,0 +1,8 @@
+[mcp_servers.serena]
+enabled = true
+command = "serena"
+args = [
+  "start-mcp-server",
+  "--context", "codex",
+  "--project-from-cwd",
+]

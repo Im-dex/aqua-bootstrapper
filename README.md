@@ -34,11 +34,11 @@ of the launched application.
 On Linux, every command started directly by the bootstrapper uses
 `PR_SET_PDEATHSIG` and receives `SIGTERM` if the bootstrapper dies. Linux does not
 propagate this setting to descendants. Applications that start processes which
-must not outlive them should launch those processes through
-[`pdeathsig`](https://github.com/Im-dex/pdeathsig):
+must not outlive them should launch those processes through the bootstrapper's
+`pdeathsig` command:
 
 ```sh
-pdeathsig <command> [args...]
+aqua-bootstrapper pdeathsig --parent-pid "$$" -- <command> [args...]
 ```
 
 Repeating this rule at each process boundary keeps the parent-death behavior
@@ -51,6 +51,27 @@ The launched application receives the Aqua paths used by the bootstrapper:
 - `AQUA_EXE`: path to the managed Aqua executable
 - `AQUA_ROOT_DIR`: path to the managed Aqua root directory
 - `AQUA_CONFIG`: path to the Aqua config file
+
+It also receives `PROCESS_CONTAINMENT_TEMPLATE_JSON`, a JSON command template
+for starting child processes. On Linux it contains the absolute path to the
+current bootstrapper followed by `"pdeathsig"`, `"--parent-pid"`, the
+`"{parent_pid}"` placeholder, and `"--"`; on Windows it is an empty array because
+the Job Object already contains descendant processes.
+
+The application's central process-launch helper must parse the template, replace
+`"{parent_pid}"` with its own PID immediately before spawning the child, and
+prepend the resolved arguments to the child argv. Individual call sites should
+only pass the executable and its arguments to that helper. Do not treat the
+template as a shell command. In pseudocode:
+
+```text
+resolved_prefix = resolve_parent_pid(template, current_pid)
+resolved_prefix + [executable] + args
+```
+
+Passing the PID explicitly lets the wrapper detect that the launching process
+exited before `PR_SET_PDEATHSIG` was configured and prevents the child command
+from executing in that case.
 
 Use these variables when the application needs to call tools through the same
 Aqua installation and config. `AQUA_ROOT_DIR` and `AQUA_CONFIG` are also read by

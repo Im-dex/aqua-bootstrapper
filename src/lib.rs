@@ -9,6 +9,7 @@ mod process_containment;
 mod state;
 mod util;
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
@@ -18,6 +19,10 @@ use crate::bootstrap::Bootstrapper;
 use crate::config::Config;
 
 pub use crate::error::{Error, Result};
+
+pub fn run_with_parent_death_signal(parent_pid: u32, command: &[OsString]) -> Result<i32> {
+    process_containment::exec_with_parent_death_signal(parent_pid, command)
+}
 
 pub async fn run(config_path: PathBuf, app_args: Vec<String>) -> Result<i32> {
     init_tracing();
