@@ -31,6 +31,11 @@ On Windows, the bootstrapper places itself in a Job Object configured with
 unexpectedly, Windows terminates all processes in that job, including descendants
 of the launched application.
 
+This guarantee is tied to the lifetime of the bootstrapper, not to each
+intermediate parent process. If a child process exits while the bootstrapper
+remains running, that child's descendants remain in the bootstrapper's Job Object
+and may continue running until the bootstrapper exits.
+
 On Linux, every command started directly by the bootstrapper uses
 `PR_SET_PDEATHSIG` and receives `SIGTERM` if the bootstrapper dies. Linux does not
 propagate this setting to descendants. Applications that start processes which
