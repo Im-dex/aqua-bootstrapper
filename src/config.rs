@@ -71,6 +71,8 @@ pub enum AppExecutable {
 pub struct AppCommand {
     pub executable: AppExecutable,
     pub command: Vec<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -119,6 +121,9 @@ impl Config {
         }
 
         require_arguments("app.command", &self.app.command)?;
+        for (name, value) in &self.app.environment {
+            require_environment_variable(name, value)?;
+        }
         match &self.app.executable {
             AppExecutable::Aqua { name } => {
                 require_non_empty("app.executable.name", name)?;
@@ -158,6 +163,20 @@ fn require_arguments(field: &str, arguments: &[String]) -> Result<()> {
     if arguments.iter().any(|part| part.trim().is_empty()) {
         return Err(Error::InvalidConfig(format!(
             "{field} must contain non-empty arguments"
+        )));
+    }
+    Ok(())
+}
+
+fn require_environment_variable(name: &str, value: &str) -> Result<()> {
+    if name.is_empty() || name.contains('=') || name.contains('\0') {
+        return Err(Error::InvalidConfig(format!(
+            "app.environment key is not a valid environment variable name: {name:?}"
+        )));
+    }
+    if value.contains('\0') {
+        return Err(Error::InvalidConfig(format!(
+            "app.environment.{name} must not contain a NUL character"
         )));
     }
     Ok(())
@@ -345,7 +364,11 @@ mod tests {
                 "bootstrapped_tools": {"NODE_EXE": "node"},
                 "app": {
                     "executable": {"source": "aqua", "name": "uv"},
-                    "command": ["run", "dv"]
+                    "command": ["run", "dv"],
+                    "environment": {
+                        "APP_MODE": "development",
+                        "PROJECT_ROOT": "{{ env.PROJECT_ROOT }}"
+                    }
                 }
             }"#,
             envs,
@@ -381,6 +404,14 @@ mod tests {
             AppExecutable::Aqua {
                 name: "uv".to_string()
             }
+        );
+        assert_eq!(
+            config.app.environment,
+            [
+                ("APP_MODE".to_string(), "development".to_string()),
+                ("PROJECT_ROOT".to_string(), project_root.to_string()),
+            ]
+            .into()
         );
     }
 
@@ -592,6 +623,24 @@ mod tests {
             .to_string();
 
         assert!(error.contains("bootstrapped_tools key"));
+    }
+
+    #[test]
+    fn rejects_invalid_app_environment_variable_name() {
+        let dir = tempdir().unwrap();
+        let mut config: Config = serde_json::from_value(config_value()).unwrap();
+        config.aqua.config = dir.path().join("aqua.yaml");
+        config.aqua.root = dir.path().join(".dv/aqua");
+        config.bootstrap_cache = dir.path().join(".dv/bootstrap");
+        config.tracked_files = vec![dir.path().join("aqua.yaml")];
+        config
+            .app
+            .environment
+            .insert("INVALID=NAME".to_string(), "value".to_string());
+
+        let error = config.validate().unwrap_err().to_string();
+
+        assert!(error.contains("app.environment key"));
     }
 
     #[test]

@@ -196,11 +196,18 @@ impl Bootstrapper {
     }
 
     fn app_envs(&self, state: &BootstrapState) -> Result<Vec<(String, String)>> {
-        let mut envs = aqua::exec::aqua_envs(
+        let mut envs = self
+            .config
+            .app
+            .environment
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        envs.extend(aqua::exec::aqua_envs(
             &self.aqua_executable(),
             &self.aqua_config(),
             &self.aqua_root(),
-        );
+        ));
         envs.extend(state.bootstrapped_tools.iter().map(|(name, tool)| {
             (
                 format!("BOOTSTRAPPED_{name}"),
@@ -350,6 +357,8 @@ mod tests {
     use crate::state::{BootstrapState, BootstrappedTool, ResolvedAppExecutable};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    const EXPECTED_AQUA_EXE_ENV: &str = "AQUA_BOOTSTRAPPER_EXPECTED_AQUA_EXE";
 
     #[test]
     fn aqua_binary_cache_ignores_tracked_files() {
@@ -581,8 +590,13 @@ mod tests {
     }
 
     #[test]
-    fn app_envs_use_cached_bootstrapped_tool_paths() {
-        let bootstrapper = bootstrapper();
+    fn app_envs_include_configured_values_and_cached_bootstrapped_tool_paths() {
+        let mut bootstrapper = bootstrapper();
+        bootstrapper
+            .config
+            .app
+            .environment
+            .insert("APP_MODE".to_string(), "development".to_string());
         let mut state = state(&bootstrapper, vec![]);
         state.bootstrapped_tools.insert(
             "NODE_EXE".to_string(),
@@ -595,6 +609,7 @@ mod tests {
         assert_eq!(
             bootstrapper.app_envs(&state).unwrap(),
             [
+                ("APP_MODE".to_string(), "development".to_string()),
                 (
                     "AQUA_EXE".to_string(),
                     bootstrapper.aqua_executable().display().to_string(),
@@ -624,6 +639,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn managed_app_environment_takes_precedence_over_configured_values() {
+        let mut bootstrapper = bootstrapper();
+        let expected_aqua_executable = bootstrapper.aqua_executable().display().to_string();
+        bootstrapper
+            .config
+            .app
+            .environment
+            .insert("AQUA_EXE".to_string(), "configured-value".to_string());
+        bootstrapper
+            .config
+            .app
+            .environment
+            .insert(EXPECTED_AQUA_EXE_ENV.to_string(), expected_aqua_executable);
+        let envs = bootstrapper
+            .app_envs(&state(&bootstrapper, vec![]))
+            .unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let args = vec![
+            "--exact".to_string(),
+            "bootstrap::tests::managed_app_environment_priority_child".to_string(),
+            "--quiet".to_string(),
+        ];
+
+        let exit_code = crate::process::run_app(
+            "app environment priority test",
+            &executable,
+            &args,
+            Some(&envs),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(exit_code, 0);
+    }
+
+    #[test]
+    fn managed_app_environment_priority_child() {
+        let Some(expected_aqua_executable) = std::env::var_os(EXPECTED_AQUA_EXE_ENV) else {
+            return;
+        };
+
+        assert_eq!(
+            std::env::var_os("AQUA_EXE").as_deref(),
+            Some(expected_aqua_executable.as_os_str())
+        );
+    }
+
     fn bootstrapper() -> Bootstrapper {
         let root = absolute_root();
         Bootstrapper::new(
@@ -650,6 +713,7 @@ mod tests {
                         name: "aqua".to_string(),
                     },
                     command: vec!["--version".to_string()],
+                    environment: BTreeMap::new(),
                 },
             },
             vec![],

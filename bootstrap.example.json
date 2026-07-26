@@ -35,6 +35,9 @@
       "source": "path",
       "path": "{% if os == 'windows' %}{{ env.PROJECT_ROOT }}/.venv/Scripts/dv.exe{% else %}{{ env.PROJECT_ROOT }}/.venv/bin/dv{% endif %}"
     },
-    "command": []
+    "command": [],
+    "environment": {
+      "PROJECT_ROOT": "{{ env.PROJECT_ROOT }}"
+    }
   }
 }

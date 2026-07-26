@@ -203,10 +203,20 @@ such as `windows` or `linux`, and can be used in conditional blocks.
       "source": "path",
       "path": "{% if os == 'windows' %}{{ env.PROJECT_ROOT }}/.venv/Scripts/dv.exe{% else %}{{ env.PROJECT_ROOT }}/.venv/bin/dv{% endif %}"
     },
-    "command": []
+    "command": [],
+    "environment": {
+      "PROJECT_ROOT": "{{ env.PROJECT_ROOT }}"
+    }
   }
 }
 ```
+
+`app.environment` is an optional object of environment-variable names and
+string values. Its entries are added to the inherited bootstrapper environment
+when the application starts. Values can use the same MiniJinja substitutions as
+the rest of the configuration. Bootstrapper-managed variables such as
+`AQUA_EXE`, `BOOTSTRAPPED_*`, and `PROCESS_CONTAINMENT_TEMPLATE_JSON` take
+precedence over entries with the same name.
 
 After environment substitution, all path fields in the configuration must be
 absolute and must not contain `.` or `..` components. On Windows, use escaped
