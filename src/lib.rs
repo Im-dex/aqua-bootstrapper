@@ -54,10 +54,49 @@ fn accessible_absolute_path(path: PathBuf) -> Result<PathBuf> {
 }
 
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let Some(filter) = rust_log_filter(std::env::var_os(EnvFilter::DEFAULT_ENV)) else {
+        return;
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
         .init();
+}
+
+fn rust_log_filter(value: Option<OsString>) -> Option<EnvFilter> {
+    value.map(|value| {
+        value
+            .into_string()
+            .ok()
+            .and_then(|value| EnvFilter::try_new(value).ok())
+            .unwrap_or_else(|| EnvFilter::new("warn"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::rust_log_filter;
+
+    #[test]
+    fn tracing_stays_disabled_without_rust_log() {
+        assert!(rust_log_filter(None).is_none());
+    }
+
+    #[test]
+    fn tracing_uses_requested_rust_log_filter() {
+        let filter = rust_log_filter(Some(OsString::from("debug"))).unwrap();
+
+        assert_eq!(filter.to_string(), "debug");
+    }
+
+    #[test]
+    fn invalid_rust_log_keeps_the_previous_warn_fallback() {
+        let filter = rust_log_filter(Some(OsString::from("[invalid"))).unwrap();
+
+        assert_eq!(filter.to_string(), "warn");
+    }
 }

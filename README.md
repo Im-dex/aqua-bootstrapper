@@ -20,7 +20,32 @@ aqua-bootstrapper --config bootstrap.json -- status --verbose
 
 These arguments are appended after the configured `app.command`.
 
-The application exit code is returned unchanged.
+The application exit code is returned unchanged. On Unix, termination by signal
+`N` is reported with the conventional shell exit code `128 + N`.
+
+## Diagnostics
+
+Diagnostic logging is disabled by default and is not required for normal use.
+Set `RUST_LOG` in the bootstrapper process environment when troubleshooting.
+Prefer the crate-specific filter to avoid enabling logs from dependencies:
+
+PowerShell:
+
+```powershell
+$env:RUST_LOG = "aqua_bootstrapper=debug"
+.\aqua-bootstrapper.exe --config bootstrap.json
+Remove-Item Env:RUST_LOG
+```
+
+Bash:
+
+```sh
+RUST_LOG=aqua_bootstrapper=debug ./aqua-bootstrapper --config bootstrap.json
+```
+
+`RUST_LOG=debug` also enables diagnostic output from dependencies. Environment
+variables are inherited by child processes, so scope `RUST_LOG` to a diagnostic
+invocation unless the launched application should receive it as well.
 
 ## Process lifetime
 

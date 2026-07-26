@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 use tokio::process::Command;
 
@@ -7,18 +9,40 @@ use crate::Result;
 pub const PROCESS_TEMPLATE_ENV: &str = "PROCESS_CONTAINMENT_TEMPLATE_JSON";
 #[cfg(target_os = "linux")]
 pub const PARENT_PID_PLACEHOLDER: &str = "{parent_pid}";
+#[cfg(target_os = "linux")]
+static COMMAND_TEMPLATE_JSON: OnceLock<String> = OnceLock::new();
 
-pub fn command_template_json() -> Result<String> {
+pub fn command_template_json() -> Result<&'static str> {
     #[cfg(target_os = "linux")]
-    let template = vec![
-        std::env::current_exe()?.display().to_string(),
-        "pdeathsig".to_string(),
-        "--parent-pid".to_string(),
-        PARENT_PID_PLACEHOLDER.to_string(),
-        "--".to_string(),
-    ];
+    {
+        if let Some(template) = COMMAND_TEMPLATE_JSON.get() {
+            return Ok(template);
+        }
+
+        let template = build_command_template_json()?;
+        let _ = COMMAND_TEMPLATE_JSON.set(template);
+        Ok(COMMAND_TEMPLATE_JSON
+            .get()
+            .expect("command template was initialized"))
+    }
+
     #[cfg(not(target_os = "linux"))]
-    let template: Vec<String> = Vec::new();
+    {
+        Ok("[]")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn build_command_template_json() -> Result<String> {
+    let executable = std::env::current_exe()?;
+    let executable = executable.to_string_lossy();
+    let template = [
+        executable.as_ref(),
+        "pdeathsig",
+        "--parent-pid",
+        PARENT_PID_PLACEHOLDER,
+        "--",
+    ];
 
     Ok(serde_json::to_string(&template)?)
 }
@@ -31,8 +55,8 @@ mod command_template_tests {
 
     #[test]
     fn command_template_is_a_json_argument_array() {
-        let template: Vec<String> =
-            serde_json::from_str(&command_template_json().unwrap()).unwrap();
+        let json = command_template_json().unwrap();
+        let template: Vec<String> = serde_json::from_str(json).unwrap();
 
         #[cfg(target_os = "linux")]
         assert_eq!(
@@ -47,6 +71,8 @@ mod command_template_tests {
         );
         #[cfg(not(target_os = "linux"))]
         assert!(template.is_empty());
+
+        assert!(std::ptr::eq(json, command_template_json().unwrap()));
     }
 }
 

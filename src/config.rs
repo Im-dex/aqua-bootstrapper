@@ -1,7 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use minijinja::value::{Enumerator, Object, Value};
 use minijinja::{Environment, UndefinedBehavior};
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +13,7 @@ use crate::error::{Error, Result};
 pub const CONFIG_SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub schema: u32,
     pub aqua: AquaConfig,
@@ -23,6 +27,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AquaConfig {
     pub version: String,
     pub sha: AquaSha,
@@ -31,6 +36,7 @@ pub struct AquaConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AquaSha {
     pub windows: String,
     pub linux: String,
@@ -47,19 +53,21 @@ impl AquaSha {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NamedCommand {
     pub name: String,
     pub command: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "source", rename_all = "snake_case")]
+#[serde(deny_unknown_fields, tag = "source", rename_all = "snake_case")]
 pub enum AppExecutable {
     Aqua { name: String },
     Path { path: PathBuf },
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppCommand {
     pub executable: AppExecutable,
     pub command: Vec<String>,
@@ -72,8 +80,7 @@ impl Config {
                 path: path.to_path_buf(),
                 source,
             })?;
-        let envs = std::env::vars().collect();
-        parse_config(&raw, &envs)
+        parse_config(&raw, ProcessEnvironment)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -124,8 +131,8 @@ impl Config {
     }
 }
 
-fn parse_config(raw: &str, envs: &HashMap<String, String>) -> Result<Config> {
-    let raw = render_template(raw, envs)?;
+fn parse_config(raw: &str, environment: impl EnvironmentSource + 'static) -> Result<Config> {
+    let raw = render_template(raw, environment)?;
     let config: Config = serde_json::from_str(&raw)?;
     config.validate()?;
     Ok(config)
@@ -165,15 +172,54 @@ fn require_sha256(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_template(value: &str, envs: &HashMap<String, String>) -> Result<String> {
+trait EnvironmentSource: fmt::Debug + Send + Sync {
+    fn get(&self, name: &str) -> Option<String>;
+    fn names(&self) -> Vec<String>;
+}
+
+#[derive(Debug)]
+struct ProcessEnvironment;
+
+impl EnvironmentSource for ProcessEnvironment {
+    fn get(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names
+    }
+}
+
+#[derive(Debug)]
+struct EnvironmentVariables<S> {
+    source: S,
+}
+
+impl<S: EnvironmentSource + 'static> Object for EnvironmentVariables<S> {
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        self.get_value_by_str(key.as_str()?)
+    }
+
+    fn get_value_by_str(self: &Arc<Self>, key: &str) -> Option<Value> {
+        self.source
+            .get(key)
+            .map(|value| Value::from(json_string_fragment(&value)))
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Values(self.source.names().into_iter().map(Value::from).collect())
+    }
+}
+
+fn render_template(value: &str, source: impl EnvironmentSource + 'static) -> Result<String> {
     let mut environment = Environment::new();
     environment.set_undefined_behavior(UndefinedBehavior::Strict);
 
-    let template_env = envs
-        .iter()
-        .map(|(name, value)| (name.as_str(), json_string_fragment(value)))
-        .collect::<BTreeMap<_, _>>();
-    environment.add_global("env", template_env);
+    environment.add_global("env", Value::from_object(EnvironmentVariables { source }));
     environment.add_global("os", std::env::consts::OS);
 
     let template = environment.template_from_str(value).map_err(|error| {
@@ -232,13 +278,44 @@ fn require_absolute_path(field: &str, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppCommand, AppExecutable, Config, parse_config, render_template};
+    use super::{
+        AppCommand, AppExecutable, Config, EnvironmentSource, parse_config, render_template,
+    };
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[derive(Debug, Clone, Default)]
+    struct TestEnvironment {
+        values: HashMap<String, String>,
+        lookups: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TestEnvironment {
+        fn from_values(values: impl IntoIterator<Item = (String, String)>) -> Self {
+            Self {
+                values: values.into_iter().collect(),
+                lookups: Arc::default(),
+            }
+        }
+    }
+
+    impl EnvironmentSource for TestEnvironment {
+        fn get(&self, name: &str) -> Option<String> {
+            self.lookups.lock().unwrap().push(name.to_string());
+            self.values.get(name).cloned()
+        }
+
+        fn names(&self) -> Vec<String> {
+            let mut names = self.values.keys().cloned().collect::<Vec<_>>();
+            names.sort_unstable();
+            names
+        }
+    }
 
     #[test]
     fn parses_config_after_env_substitution() {
@@ -247,7 +324,8 @@ mod tests {
         } else {
             "/work/project"
         };
-        let envs = HashMap::from([("PROJECT_ROOT".to_string(), project_root.to_string())]);
+        let envs =
+            TestEnvironment::from_values([("PROJECT_ROOT".to_string(), project_root.to_string())]);
 
         let config = parse_config(
             r#"{
@@ -270,7 +348,7 @@ mod tests {
                     "command": ["run", "dv"]
                 }
             }"#,
-            &envs,
+            envs,
         )
         .unwrap();
 
@@ -362,12 +440,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_top_level_config_field() {
+        let mut config = config_value();
+        config["unexpected"] = json!(true);
+
+        let error = serde_json::from_value::<Config>(config).unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `unexpected`"));
+    }
+
+    #[test]
+    fn rejects_unknown_nested_config_field() {
+        let mut config = config_value();
+        config["aqua"]["unexpected"] = json!(true);
+
+        let error = serde_json::from_value::<Config>(config).unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `unexpected`"));
+    }
+
+    #[test]
+    fn rejects_unknown_app_executable_field() {
+        let error = serde_json::from_value::<AppExecutable>(json!({
+            "source": "aqua",
+            "name": "uv",
+            "unexpected": true,
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `unexpected`"));
+    }
+
+    #[test]
     fn renders_environment_variables_in_config_template() {
-        let envs = HashMap::from([("PROJECT_ROOT".to_string(), "C:\\work\\project".to_string())]);
+        let envs = TestEnvironment::from_values([(
+            "PROJECT_ROOT".to_string(),
+            "C:\\work\\project".to_string(),
+        )]);
 
         let config = render_template(
             r#"{"aqua":{"config":"{{ env.PROJECT_ROOT }}/aqua.yaml"}}"#,
-            &envs,
+            envs,
         )
         .unwrap();
 
@@ -378,10 +491,40 @@ mod tests {
     }
 
     #[test]
+    fn looks_up_only_referenced_environment_variables() {
+        let envs = TestEnvironment::from_values([
+            ("REFERENCED".to_string(), "value".to_string()),
+            ("UNREFERENCED".to_string(), "unused".to_string()),
+        ]);
+        let lookups = Arc::clone(&envs.lookups);
+
+        let rendered = render_template(r#"{"value":"{{ env.REFERENCED }}"}"#, envs).unwrap();
+
+        assert_eq!(rendered, r#"{"value":"value"}"#);
+        assert_eq!(*lookups.lock().unwrap(), ["REFERENCED"]);
+    }
+
+    #[test]
+    fn enumerates_environment_only_when_template_requests_it() {
+        let envs = TestEnvironment::from_values([
+            ("SECOND".to_string(), "two".to_string()),
+            ("FIRST".to_string(), "one".to_string()),
+        ]);
+
+        let rendered = render_template(
+            r#"{% for name in env %}{{ name }}={{ env[name] }};{% endfor %}"#,
+            envs,
+        )
+        .unwrap();
+
+        assert_eq!(rendered, "FIRST=one;SECOND=two;");
+    }
+
+    #[test]
     fn renders_platform_conditional_in_config_template() {
         let rendered = render_template(
             r#"{"name":"{% if os == 'windows' %}windows{% else %}other{% endif %}"}"#,
-            &HashMap::new(),
+            TestEnvironment::default(),
         )
         .unwrap();
 
@@ -399,7 +542,7 @@ mod tests {
     fn rejects_missing_config_template_values() {
         let error = render_template(
             r#"{"aqua":{"config":"{{ env.MISSING_ENV }}/aqua.yaml"}}"#,
-            &HashMap::new(),
+            TestEnvironment::default(),
         )
         .unwrap_err()
         .to_string();
@@ -409,7 +552,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_config_template() {
-        let error = render_template("{{ env.PROJECT_ROOT", &HashMap::new())
+        let error = render_template("{{ env.PROJECT_ROOT", TestEnvironment::default())
             .unwrap_err()
             .to_string();
 
@@ -444,7 +587,7 @@ mod tests {
                 }}
             }}"#,
         );
-        let error = parse_config(&config, &HashMap::new())
+        let error = parse_config(&config, TestEnvironment::default())
             .unwrap_err()
             .to_string();
 
@@ -476,7 +619,7 @@ mod tests {
             }}"#,
         );
 
-        let error = parse_config(&config, &HashMap::new())
+        let error = parse_config(&config, TestEnvironment::default())
             .unwrap_err()
             .to_string();
 
@@ -669,6 +812,27 @@ mod tests {
             },
             "config": json_path(config),
             "root": json_path(root)
+        })
+    }
+
+    fn config_value() -> serde_json::Value {
+        json!({
+            "schema": 4,
+            "aqua": {
+                "version": "v2.59.2",
+                "sha": {
+                    "windows": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "linux": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+                },
+                "config": "aqua.yaml",
+                "root": ".dv/aqua",
+            },
+            "bootstrap_cache": ".dv/bootstrap",
+            "tracked_files": ["aqua.yaml"],
+            "app": {
+                "executable": {"source": "aqua", "name": "uv"},
+                "command": ["run", "dv"],
+            },
         })
     }
 }

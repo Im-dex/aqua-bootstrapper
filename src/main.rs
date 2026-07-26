@@ -47,7 +47,7 @@ fn main() {
     std::process::exit(exit_code);
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn run_bootstrap(config: PathBuf, app_args: Vec<String>) -> i32 {
     aqua_bootstrapper::run(config, app_args)
         .await

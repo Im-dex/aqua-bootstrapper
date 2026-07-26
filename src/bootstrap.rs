@@ -16,7 +16,6 @@ pub struct Bootstrapper {
     root: PathBuf,
     config: Config,
     app_args: Vec<String>,
-    client: Client,
 }
 
 #[derive(Debug)]
@@ -32,16 +31,15 @@ impl Bootstrapper {
             root,
             config,
             app_args,
-            client: Client::new(),
         }
     }
 
     pub async fn run(&self) -> Result<i32> {
         loop {
-            let lock = self.acquire_shared_lock().await?;
+            let lock = self.acquire_shared_lock()?;
             debug!(path = %lock.path().display(), "bootstrap shared lock acquired");
 
-            let snapshot = self.snapshot().await?;
+            let snapshot = self.snapshot()?;
             if self.is_valid(&snapshot) {
                 debug!("bootstrap fast path hit");
                 return self
@@ -51,10 +49,10 @@ impl Bootstrapper {
             drop(lock);
 
             info!("bootstrap cache miss; acquiring exclusive lock");
-            let lock = self.acquire_exclusive_lock().await?;
+            let lock = self.acquire_exclusive_lock()?;
             debug!(path = %lock.path().display(), "bootstrap exclusive lock acquired");
 
-            let snapshot = self.snapshot().await?;
+            let snapshot = self.snapshot()?;
             if !self.is_valid(&snapshot) {
                 self.bootstrap(snapshot).await?;
             }
@@ -68,9 +66,10 @@ impl Bootstrapper {
             info!("aqua binary cache hit; skipping Aqua download and verification");
             self.aqua_executable()
         } else {
+            let client = Client::new();
             let cache = self.bootstrap_cache();
             let aqua_executable = aqua::install::ensure_installed(
-                &self.client,
+                &client,
                 &self.config.aqua.version,
                 self.config.aqua.sha.for_current_platform()?,
                 &aqua_root,
@@ -210,41 +209,30 @@ impl Bootstrapper {
         }));
         envs.push((
             crate::process_containment::PROCESS_TEMPLATE_ENV.to_string(),
-            crate::process_containment::command_template_json()?,
+            crate::process_containment::command_template_json()?.to_string(),
         ));
         Ok(envs)
     }
 
-    async fn acquire_shared_lock(&self) -> Result<BootstrapLock> {
-        let cache = self.bootstrap_cache();
-        tokio::task::spawn_blocking(move || BootstrapLock::acquire_shared(&cache)).await?
+    fn acquire_shared_lock(&self) -> Result<BootstrapLock> {
+        BootstrapLock::acquire_shared(&self.config.bootstrap_cache)
     }
 
-    async fn acquire_exclusive_lock(&self) -> Result<BootstrapLock> {
-        let cache = self.bootstrap_cache();
-        tokio::task::spawn_blocking(move || BootstrapLock::acquire_exclusive(&cache)).await?
+    fn acquire_exclusive_lock(&self) -> Result<BootstrapLock> {
+        BootstrapLock::acquire_exclusive(&self.config.bootstrap_cache)
     }
 
-    async fn snapshot(&self) -> Result<Snapshot> {
-        let root = self.root.clone();
-        let cache = self.bootstrap_cache();
-        let tracked_paths = self.config.tracked_files.clone();
+    fn snapshot(&self) -> Result<Snapshot> {
+        let state = state::read(&self.config.bootstrap_cache)?;
+        let tracked_files =
+            fingerprint::fingerprint_tracked_files(&self.root, &self.config.tracked_files)?;
         let aqua_executable = self.aqua_executable();
-
-        let state_task = tokio::task::spawn_blocking(move || state::read(&cache));
-        let tracked_task = tokio::task::spawn_blocking(move || {
-            fingerprint::fingerprint_tracked_files(&root, &tracked_paths)
-        });
-        let executable_task =
-            tokio::task::spawn_blocking(move || fingerprint::executable_exists(&aqua_executable));
-
-        let (state, tracked_files, aqua_executable_exists) =
-            tokio::try_join!(state_task, tracked_task, executable_task)?;
+        let aqua_executable_exists = fingerprint::executable_exists(&aqua_executable)?;
 
         Ok(Snapshot {
-            state: state?,
-            tracked_files: tracked_files?,
-            aqua_executable_exists: aqua_executable_exists?,
+            state,
+            tracked_files,
+            aqua_executable_exists,
         })
     }
 
@@ -628,7 +616,9 @@ mod tests {
                 ),
                 (
                     "PROCESS_CONTAINMENT_TEMPLATE_JSON".to_string(),
-                    crate::process_containment::command_template_json().unwrap(),
+                    crate::process_containment::command_template_json()
+                        .unwrap()
+                        .to_string(),
                 ),
             ]
         );
