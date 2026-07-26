@@ -18,9 +18,7 @@ Application arguments can be passed after `--`:
 aqua-bootstrapper --config bootstrap.json -- status --verbose
 ```
 
-These arguments are appended to `app.command` from the configuration. For
-example, with `app.command` set to `["uv", "run", "dv"]`, the command above
-runs `uv run dv status --verbose` directly.
+These arguments are appended after the configured `app.command`.
 
 The application exit code is returned unchanged.
 
@@ -90,9 +88,64 @@ underscores. After `aqua install`, the bootstrapper resolves every tool with
 absolute path. For example, `"NODE_EXE": "node"` sets
 `BOOTSTRAPPED_NODE_EXE`.
 
-The first element of `app.command` must be an Aqua-managed tool. After
-`aqua install`, the bootstrapper resolves it with `aqua which`, stores the
-result in state, and starts that executable directly on later launches.
+`app.executable` selects and names the executable:
+
+- `{"source": "aqua", "name": "<tool>"}` resolves the named tool with
+  `aqua which`.
+- `{"source": "path", "path": "<absolute path>"}` uses the path directly.
+
+`app.command` contains only arguments passed to the selected executable. An
+absolute path is checked after all post-install commands have completed, then
+stored in state and launched directly.
+
+Explicit Aqua selector:
+
+```json
+{
+  "app": {
+    "executable": {
+      "source": "aqua",
+      "name": "uv"
+    },
+    "command": ["run", "dv"]
+  }
+}
+```
+
+Absolute path selector:
+
+```json
+{
+  "app": {
+    "executable": {
+      "source": "path",
+      "path": "{% if os == 'windows' %}{{ env.PROJECT_ROOT }}/.venv/Scripts/dv.exe{% else %}{{ env.PROJECT_ROOT }}/.venv/bin/dv{% endif %}"
+    },
+    "command": []
+  }
+}
+```
+
+Legacy Aqua selector:
+
+```json
+{
+  "app": {
+    "command": ["uv", "run", "dv"]
+  }
+}
+```
+
+For backward compatibility, omitting `app.executable` uses the first command
+element as an Aqua tool name and the remaining elements as its arguments.
+
+An absolute application path must not contain `.` or `..` components. Before it
+is saved in state, the bootstrapper verifies that it points to a regular file
+and, on Linux, that at least one executable permission bit is set. Windows has
+no equivalent preflight format validation: an incompatible file is saved as a
+regular file and the operating system reports the error when the application is
+launched. If the cached file later stops satisfying the checks performed by the
+bootstrapper, the bootstrap state is invalidated and `post_install` is retried.
 
 The configuration file is rendered as a [MiniJinja](https://docs.rs/minijinja/)
 template before JSON parsing. Environment variables are available through the
@@ -126,7 +179,7 @@ such as `windows` or `linux`, and can be used in conditional blocks.
   "post_install": [
     {
       "name": "{% if os == 'windows' %}Python environment on Windows{% else %}Python environment on Linux{% endif %}",
-      "command": ["uv", "sync", "--locked"]
+      "command": ["uv", "sync", "--all-groups", "--locked", "--project", "{{ env.PROJECT_ROOT }}"]
     }
   ],
   "bootstrapped_tools": {
@@ -134,14 +187,19 @@ such as `windows` or `linux`, and can be used in conditional blocks.
     "PYTHON_EXE": "python"
   },
   "app": {
-    "command": ["uv", "run", "dv"]
+    "executable": {
+      "source": "path",
+      "path": "{% if os == 'windows' %}{{ env.PROJECT_ROOT }}/.venv/Scripts/dv.exe{% else %}{{ env.PROJECT_ROOT }}/.venv/bin/dv{% endif %}"
+    },
+    "command": []
   }
 }
 ```
 
 After environment substitution, all path fields in the configuration must be
-absolute. On Windows, use escaped backslashes or forward slashes in JSON, for
-example `C:/work/project/.dv/aqua`.
+absolute and must not contain `.` or `..` components. On Windows, use escaped
+backslashes or forward slashes in JSON, for example
+`C:/work/project/.dv/aqua`.
 
 ## Security
 
@@ -181,6 +239,12 @@ as `{{ env.PROJECT_ROOT }}/config/**/*.toml`. Glob patterns must match at least 
 file. Matched files are sorted and deduplicated before they are stored in state.
 The `bootstrapped_tools` mapping is also compared with state so changing an
 environment-variable name or tool name refreshes the cached path. Changing the
-first element of `app.command` also refreshes its cached executable path.
+legacy first element of `app.command` or the explicit `app.executable` selector
+also refreshes the cached executable path. A missing absolute application
+executable invalidates the cached state as well.
+
+The resolved application executable is stored as one tagged state value:
+`aqua` contains the Aqua tool name and resolved path, while `path` contains the
+validated absolute path.
 
 Content hashes are intentionally not used for fast-path invalidation.

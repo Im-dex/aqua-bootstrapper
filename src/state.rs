@@ -18,6 +18,21 @@ pub struct BootstrappedTool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ResolvedAppExecutable {
+    Aqua { name: String, path: PathBuf },
+    Path { path: PathBuf },
+}
+
+impl ResolvedAppExecutable {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Aqua { path, .. } | Self::Path { path } => path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapState {
     pub schema: u32,
     pub aqua_version: String,
@@ -30,7 +45,7 @@ pub struct BootstrapState {
     #[serde(default)]
     pub bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
     #[serde(default)]
-    pub app_tool: Option<BootstrappedTool>,
+    pub resolved_app_executable: Option<ResolvedAppExecutable>,
 }
 
 impl BootstrapState {
@@ -41,7 +56,7 @@ impl BootstrapState {
         tracked_files: Vec<FileFingerprint>,
         post_install_completed: bool,
         bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
-        app_tool: Option<BootstrappedTool>,
+        resolved_app_executable: Option<ResolvedAppExecutable>,
     ) -> Self {
         Self {
             schema: STATE_SCHEMA,
@@ -51,7 +66,7 @@ impl BootstrapState {
             tracked_files,
             post_install_completed,
             bootstrapped_tools,
-            app_tool,
+            resolved_app_executable,
         }
     }
 
@@ -95,7 +110,7 @@ pub fn write_atomic(cache: &Path, state: &BootstrapState) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BootstrapState, read, write_atomic};
+    use super::{BootstrapState, ResolvedAppExecutable, read, write_atomic};
     use crate::fingerprint::FileFingerprint;
     use std::collections::BTreeMap;
 
@@ -115,7 +130,10 @@ mod tests {
             }],
             false,
             BTreeMap::new(),
-            None,
+            Some(ResolvedAppExecutable::Aqua {
+                name: "aqua".to_string(),
+                path: ".dv/aqua/bin/aqua".into(),
+            }),
         );
 
         write_atomic(dir.path(), &state).unwrap();
@@ -139,6 +157,23 @@ mod tests {
 
         assert!(state.post_install_completed);
         assert!(state.bootstrapped_tools.is_empty());
-        assert!(state.app_tool.is_none());
+        assert_eq!(state.resolved_app_executable, None);
+    }
+
+    #[test]
+    fn legacy_conflicting_app_fields_require_resolution() {
+        let state: BootstrapState = serde_json::from_str(
+            r#"{
+              "schema": 1,
+              "aqua_version": "v2.59.2",
+              "aqua_executable": ".dv/aqua/bin/aqua",
+              "tracked_files": [],
+              "app_executable": {"source": "aqua", "name": "uv"},
+              "app_tool": {"tool": "uv", "path": ".dv/aqua/bin/uv"}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(state.resolved_app_executable, None);
     }
 }

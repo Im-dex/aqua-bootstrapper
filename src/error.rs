@@ -47,6 +47,19 @@ pub enum Error {
     #[error("command returned invalid output: {name}: {reason}")]
     CommandOutput { name: String, reason: String },
 
+    #[error("application executable is not accessible after post-install: {path}: {source}")]
+    ApplicationExecutableInaccessible {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("application executable is not a regular file after post-install: {path}")]
+    ApplicationExecutableNotRegularFile { path: PathBuf },
+
+    #[cfg(unix)]
+    #[error("application executable does not have an executable permission bit: {path}")]
+    ApplicationExecutableNotExecutable { path: PathBuf },
+
     #[error("process containment setup failed during {operation}: {source}")]
     ProcessContainment {
         operation: &'static str,

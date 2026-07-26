@@ -5,11 +5,11 @@ use reqwest::Client;
 use tracing::{debug, info};
 
 use crate::aqua;
-use crate::config::Config;
-use crate::error::Result;
+use crate::config::{AppExecutable, Config};
+use crate::error::{Error, Result};
 use crate::fingerprint::{self, FileFingerprint};
 use crate::lock::BootstrapLock;
-use crate::state::{self, BootstrapState, BootstrappedTool};
+use crate::state::{self, BootstrapState, BootstrappedTool, ResolvedAppExecutable};
 
 #[derive(Debug)]
 pub struct Bootstrapper {
@@ -86,10 +86,7 @@ impl Bootstrapper {
 
         aqua::exec::run_install(&aqua_executable, &self.aqua_config(), &aqua_root).await?;
 
-        let (bootstrapped_tools, app_tool) = tokio::try_join!(
-            self.resolve_bootstrapped_tools(&aqua_executable),
-            self.resolve_app_tool(&aqua_executable),
-        )?;
+        let bootstrapped_tools = self.resolve_bootstrapped_tools(&aqua_executable).await?;
 
         for command in &self.config.post_install {
             let aqua_config = self.aqua_config();
@@ -99,11 +96,13 @@ impl Bootstrapper {
                 .await?;
         }
 
+        let resolved_app_executable = self.resolve_app_executable(&aqua_executable).await?;
+
         self.write_state(
             snapshot.tracked_files,
             true,
             bootstrapped_tools,
-            Some(app_tool),
+            Some(resolved_app_executable),
         )
         .await?;
         Ok(())
@@ -114,7 +113,7 @@ impl Bootstrapper {
         tracked_files: Vec<FileFingerprint>,
         post_install_completed: bool,
         bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
-        app_tool: Option<BootstrappedTool>,
+        resolved_app_executable: Option<ResolvedAppExecutable>,
     ) -> Result<()> {
         let state = BootstrapState::new(
             self.config.aqua.version.clone(),
@@ -123,7 +122,7 @@ impl Bootstrapper {
             tracked_files,
             post_install_completed,
             bootstrapped_tools,
-            app_tool,
+            resolved_app_executable,
         );
 
         let cache_for_write = self.bootstrap_cache();
@@ -133,15 +132,24 @@ impl Bootstrapper {
     }
 
     async fn launch_app(&self, state: &BootstrapState) -> Result<i32> {
-        let app_tool = state
-            .app_tool
+        let executable = state
+            .resolved_app_executable
             .as_ref()
-            .expect("valid state contains a resolved app tool");
-        let mut args = self.config.app.command[1..].to_vec();
-        args.extend(self.app_args.iter().cloned());
+            .expect("valid state contains a resolved app executable");
+        let args = self.app_command_args();
         let envs = self.app_envs(state)?;
 
-        crate::process::run_app("application", &app_tool.path, &args, Some(&envs)).await
+        crate::process::run_app("application", executable.path(), &args, Some(&envs)).await
+    }
+
+    fn app_command_args(&self) -> Vec<String> {
+        let mut args = if self.config.app.executable.is_some() {
+            self.config.app.command.clone()
+        } else {
+            self.config.app.command[1..].to_vec()
+        };
+        args.extend(self.app_args.iter().cloned());
+        args
     }
 
     async fn resolve_bootstrapped_tools(
@@ -167,17 +175,27 @@ impl Bootstrapper {
         Ok(tools)
     }
 
-    async fn resolve_app_tool(&self, aqua_executable: &Path) -> Result<BootstrappedTool> {
-        let tool = self.config.app.command[0].clone();
-        let path = aqua::exec::resolve_tool(
-            aqua_executable,
-            &self.aqua_config(),
-            &self.aqua_root(),
-            &tool,
-        )
-        .await?;
-
-        Ok(BootstrappedTool { tool, path })
+    async fn resolve_app_executable(
+        &self,
+        aqua_executable: &Path,
+    ) -> Result<ResolvedAppExecutable> {
+        let executable = self.app_executable();
+        match executable {
+            AppExecutable::Aqua { name } => {
+                let path = aqua::exec::resolve_tool(
+                    aqua_executable,
+                    &self.aqua_config(),
+                    &self.aqua_root(),
+                    &name,
+                )
+                .await?;
+                Ok(ResolvedAppExecutable::Aqua { name, path })
+            }
+            AppExecutable::Path { path } => {
+                validate_application_executable(&path)?;
+                Ok(ResolvedAppExecutable::Path { path })
+            }
+        }
     }
 
     fn app_envs(&self, state: &BootstrapState) -> Result<Vec<(String, String)>> {
@@ -241,7 +259,7 @@ impl Bootstrapper {
             && state.tracked_files == snapshot.tracked_files
             && state.post_install_completed
             && self.bootstrapped_tools_match(state)
-            && self.app_tool_matches(state)
+            && self.app_executable_matches(state)
     }
 
     fn is_aqua_binary_cached(&self, snapshot: &Snapshot) -> bool {
@@ -268,11 +286,36 @@ impl Bootstrapper {
             })
     }
 
-    fn app_tool_matches(&self, state: &BootstrapState) -> bool {
-        state
-            .app_tool
-            .as_ref()
-            .is_some_and(|app_tool| app_tool.tool == self.config.app.command[0])
+    fn app_executable_matches(&self, state: &BootstrapState) -> bool {
+        match (
+            self.app_executable(),
+            state.resolved_app_executable.as_ref(),
+        ) {
+            (
+                AppExecutable::Aqua { name },
+                Some(ResolvedAppExecutable::Aqua {
+                    name: resolved_name,
+                    ..
+                }),
+            ) => name == *resolved_name,
+            (
+                AppExecutable::Path { path },
+                Some(ResolvedAppExecutable::Path {
+                    path: resolved_path,
+                }),
+            ) => path == *resolved_path && validate_application_executable(&path).is_ok(),
+            _ => false,
+        }
+    }
+
+    fn app_executable(&self) -> AppExecutable {
+        self.config
+            .app
+            .executable
+            .clone()
+            .unwrap_or_else(|| AppExecutable::Aqua {
+                name: self.config.app.command[0].clone(),
+            })
     }
 
     fn aqua_config(&self) -> PathBuf {
@@ -296,14 +339,41 @@ impl Bootstrapper {
     }
 }
 
+fn validate_application_executable(path: &Path) -> Result<()> {
+    let metadata =
+        std::fs::metadata(path).map_err(|source| Error::ApplicationExecutableInaccessible {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if !metadata.is_file() {
+        return Err(Error::ApplicationExecutableNotRegularFile {
+            path: path.to_path_buf(),
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(Error::ApplicationExecutableNotExecutable {
+                path: path.to_path_buf(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Bootstrapper, Snapshot};
-    use crate::config::{AppCommand, AquaConfig, AquaSha, Config};
+    use crate::config::{AppCommand, AppExecutable, AquaConfig, AquaSha, Config};
+    use crate::error::Error;
     use crate::fingerprint::FileFingerprint;
-    use crate::state::{BootstrapState, BootstrappedTool};
+    use crate::state::{BootstrapState, BootstrappedTool, ResolvedAppExecutable};
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn aqua_binary_cache_ignores_tracked_files() {
@@ -364,10 +434,10 @@ mod tests {
     }
 
     #[test]
-    fn full_bootstrap_state_requires_resolved_app_tool() {
+    fn full_bootstrap_state_requires_resolved_app_executable() {
         let bootstrapper = bootstrapper();
         let mut state = state(&bootstrapper, vec![fingerprint("aqua.yaml", 1)]);
-        state.app_tool = None;
+        state.resolved_app_executable = None;
         let snapshot = Snapshot {
             state: Some(state),
             tracked_files: vec![fingerprint("aqua.yaml", 1)],
@@ -378,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn full_bootstrap_state_requires_current_app_tool() {
+    fn full_bootstrap_state_requires_current_app_executable() {
         let mut bootstrapper = bootstrapper();
         bootstrapper.config.app.command[0] = "uvx".to_string();
         let snapshot = Snapshot {
@@ -386,6 +456,166 @@ mod tests {
             tracked_files: vec![fingerprint("aqua.yaml", 1)],
             aqua_executable_exists: true,
         };
+
+        assert!(!bootstrapper.is_valid(&snapshot));
+    }
+
+    #[test]
+    fn equivalent_explicit_aqua_selector_reuses_resolved_executable() {
+        let mut bootstrapper = bootstrapper();
+        let state = state(&bootstrapper, vec![fingerprint("aqua.yaml", 1)]);
+        bootstrapper.config.app.executable = Some(AppExecutable::Aqua {
+            name: "aqua".to_string(),
+        });
+        bootstrapper.config.app.command = vec!["--version".to_string()];
+        let snapshot = Snapshot {
+            state: Some(state),
+            tracked_files: vec![fingerprint("aqua.yaml", 1)],
+            aqua_executable_exists: true,
+        };
+
+        assert!(bootstrapper.is_valid(&snapshot));
+    }
+
+    #[test]
+    fn legacy_app_command_uses_first_element_as_aqua_executable() {
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.app_args = vec!["status".to_string()];
+
+        assert_eq!(
+            bootstrapper.app_executable(),
+            AppExecutable::Aqua {
+                name: "aqua".to_string()
+            }
+        );
+        assert_eq!(bootstrapper.app_command_args(), ["--version", "status"]);
+    }
+
+    #[test]
+    fn explicit_app_executable_keeps_entire_command_as_arguments() {
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.config.app.executable = Some(AppExecutable::Aqua {
+            name: "aqua".to_string(),
+        });
+        bootstrapper.config.app.command = vec!["--version".to_string()];
+        bootstrapper.app_args = vec!["status".to_string()];
+
+        assert_eq!(bootstrapper.app_command_args(), ["--version", "status"]);
+    }
+
+    #[tokio::test]
+    async fn absolute_app_path_is_resolved_without_aqua() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join(executable_filename("dv"));
+        write_executable(&executable);
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+            path: executable.clone(),
+        });
+        bootstrapper.config.app.command.clear();
+
+        let resolved = bootstrapper
+            .resolve_app_executable(Path::new("aqua-is-not-used"))
+            .await
+            .unwrap();
+
+        assert_eq!(resolved, ResolvedAppExecutable::Path { path: executable });
+    }
+
+    #[tokio::test]
+    async fn missing_absolute_app_path_is_reported_clearly() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("missing");
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+            path: executable.clone(),
+        });
+        bootstrapper.config.app.command.clear();
+
+        let error = bootstrapper
+            .resolve_app_executable(Path::new("aqua-is-not-used"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::ApplicationExecutableInaccessible { path, source }
+                if path == executable && source.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[tokio::test]
+    async fn directory_is_not_accepted_as_absolute_app_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("directory");
+        std::fs::create_dir(&executable).unwrap();
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+            path: executable.clone(),
+        });
+        bootstrapper.config.app.command.clear();
+
+        let error = bootstrapper
+            .resolve_app_executable(Path::new("aqua-is-not-used"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::ApplicationExecutableNotRegularFile { path } if path == executable
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn absolute_app_path_requires_executable_permission() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("dv");
+        std::fs::write(&executable, []).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+            path: executable.clone(),
+        });
+        bootstrapper.config.app.command.clear();
+
+        let error = bootstrapper
+            .resolve_app_executable(Path::new("aqua-is-not-used"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::ApplicationExecutableNotExecutable { path } if path == executable
+        ));
+    }
+
+    #[test]
+    fn missing_cached_absolute_app_path_requires_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join(executable_filename("dv"));
+        write_executable(&executable);
+        let mut bootstrapper = bootstrapper();
+        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+            path: executable.clone(),
+        });
+        bootstrapper.config.app.command.clear();
+        let tracked_files = vec![fingerprint("aqua.yaml", 1)];
+        let mut state = state(&bootstrapper, tracked_files.clone());
+        state.resolved_app_executable = Some(ResolvedAppExecutable::Path {
+            path: executable.clone(),
+        });
+        let snapshot = Snapshot {
+            state: Some(state),
+            tracked_files,
+            aqua_executable_exists: true,
+        };
+
+        assert!(bootstrapper.is_valid(&snapshot));
+
+        std::fs::remove_file(executable).unwrap();
 
         assert!(!bootstrapper.is_valid(&snapshot));
     }
@@ -469,6 +699,7 @@ mod tests {
                 post_install: vec![],
                 bootstrapped_tools: BTreeMap::new(),
                 app: AppCommand {
+                    executable: None,
                     command: vec!["aqua".to_string(), "--version".to_string()],
                 },
             },
@@ -490,8 +721,8 @@ mod tests {
             tracked_files,
             true,
             BTreeMap::new(),
-            Some(BootstrappedTool {
-                tool: "aqua".to_string(),
+            Some(ResolvedAppExecutable::Aqua {
+                name: "aqua".to_string(),
                 path: absolute_root().join(".dv/aqua/bin/aqua"),
             }),
         )
@@ -502,6 +733,28 @@ mod tests {
             path: path.into(),
             size,
             mtime_ns: 7,
+        }
+    }
+
+    fn write_executable(path: &Path) {
+        #[cfg(windows)]
+        std::fs::copy(std::env::current_exe().unwrap(), path).unwrap();
+
+        #[cfg(unix)]
+        {
+            std::fs::write(path, []).unwrap();
+
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn executable_filename(name: &str) -> String {
+        if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
         }
     }
 

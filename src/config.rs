@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use minijinja::{Environment, UndefinedBehavior};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -52,8 +52,17 @@ pub struct NamedCommand {
     pub command: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum AppExecutable {
+    Aqua { name: String },
+    Path { path: PathBuf },
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppCommand {
+    #[serde(default)]
+    pub executable: Option<AppExecutable>,
     pub command: Vec<String>,
 }
 
@@ -103,7 +112,20 @@ impl Config {
             require_non_empty(&format!("bootstrapped_tools.{env_name}"), tool)?;
         }
 
-        require_command("app.command", &self.app.command)?;
+        match &self.app.executable {
+            None => require_command("app.command", &self.app.command)?,
+            Some(executable) => {
+                require_arguments("app.command", &self.app.command)?;
+                match executable {
+                    AppExecutable::Aqua { name } => {
+                        require_non_empty("app.executable.name", name)?;
+                    }
+                    AppExecutable::Path { path } => {
+                        require_absolute_path("app.executable.path", path)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -123,7 +145,16 @@ fn require_non_empty(field: &str, value: &str) -> Result<()> {
 }
 
 fn require_command(field: &str, command: &[String]) -> Result<()> {
-    if command.is_empty() || command.iter().any(|part| part.trim().is_empty()) {
+    if command.is_empty() {
+        return Err(Error::InvalidConfig(format!(
+            "{field} must contain non-empty arguments"
+        )));
+    }
+    require_arguments(field, command)
+}
+
+fn require_arguments(field: &str, arguments: &[String]) -> Result<()> {
+    if arguments.iter().any(|part| part.trim().is_empty()) {
         return Err(Error::InvalidConfig(format!(
             "{field} must contain non-empty arguments"
         )));
@@ -191,12 +222,13 @@ fn require_absolute_path(field: &str, path: &Path) -> Result<()> {
         )));
     }
 
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
+    let path_text = path.as_os_str().to_string_lossy();
+    if path_text
+        .split(|character| character == '/' || (cfg!(windows) && character == '\\'))
+        .any(|component| component == "." || component == "..")
     {
         return Err(Error::InvalidConfig(format!(
-            "{field} must not contain parent directory components: {}",
+            "{field} must not contain `.` or `..` path components: {}",
             path.display()
         )));
     }
@@ -206,7 +238,7 @@ fn require_absolute_path(field: &str, path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, parse_config, render_template};
+    use super::{AppCommand, AppExecutable, Config, parse_config, render_template};
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
@@ -269,6 +301,52 @@ mod tests {
             config.bootstrapped_tools,
             [("NODE_EXE".to_string(), "node".to_string())].into()
         );
+        assert_eq!(config.app.executable, None);
+    }
+
+    #[test]
+    fn parses_path_app_executable_selector() {
+        let executable = if cfg!(windows) {
+            Path::new("C:/work/project/.venv/Scripts/dv.exe")
+        } else {
+            Path::new("/work/project/.venv/bin/dv")
+        };
+        let app: AppCommand = serde_json::from_value(json!({
+            "executable": {
+                "source": "path",
+                "path": executable,
+            },
+            "command": ["status"],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            app.executable,
+            Some(AppExecutable::Path {
+                path: executable.to_path_buf(),
+            })
+        );
+        assert_eq!(app.command, ["status"]);
+    }
+
+    #[test]
+    fn parses_aqua_app_executable_selector() {
+        let app: AppCommand = serde_json::from_value(json!({
+            "executable": {
+                "source": "aqua",
+                "name": "uv",
+            },
+            "command": ["run", "dv"],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            app.executable,
+            Some(AppExecutable::Aqua {
+                name: "uv".to_string(),
+            })
+        );
+        assert_eq!(app.command, ["run", "dv"]);
     }
 
     #[test]
@@ -431,6 +509,68 @@ mod tests {
         .unwrap();
 
         assert!(Config::read(&path).is_err());
+    }
+
+    #[test]
+    fn rejects_relative_app_executable_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bootstrap.json");
+        fs::write(
+            &path,
+            json!({
+                "schema": 3,
+                "aqua": aqua_config(
+                    &dir.path().join("aqua.yaml"),
+                    &dir.path().join(".dv/aqua"),
+                ),
+                "bootstrap_cache": dir.path().join(".dv/bootstrap"),
+                "tracked_files": [dir.path().join("aqua.yaml")],
+                "app": {
+                    "executable": {
+                        "source": "path",
+                        "path": ".venv/bin/dv",
+                    },
+                    "command": [],
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = Config::read(&path).unwrap_err().to_string();
+
+        assert!(error.contains("app.executable.path must be absolute"));
+    }
+
+    #[test]
+    fn rejects_current_dir_component_in_app_executable_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bootstrap.json");
+        fs::write(
+            &path,
+            json!({
+                "schema": 3,
+                "aqua": aqua_config(
+                    &dir.path().join("aqua.yaml"),
+                    &dir.path().join(".dv/aqua"),
+                ),
+                "bootstrap_cache": dir.path().join(".dv/bootstrap"),
+                "tracked_files": [dir.path().join("aqua.yaml")],
+                "app": {
+                    "executable": {
+                        "source": "path",
+                        "path": dir.path().join(".").join("dv"),
+                    },
+                    "command": [],
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = Config::read(&path).unwrap_err().to_string();
+
+        assert!(error.contains("must not contain `.` or `..` path components"));
     }
 
     #[test]

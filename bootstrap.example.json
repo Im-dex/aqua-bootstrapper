@@ -23,15 +23,18 @@
       "command": [
         "uv",
         "sync",
-        "--locked"
+        "--all-groups",
+        "--locked",
+        "--project",
+        "{{ env.PROJECT_ROOT }}"
       ]
     }
   ],
   "app": {
-    "command": [
-      "uv",
-      "run",
-      "dv"
-    ]
+    "executable": {
+      "source": "path",
+      "path": "{% if os == 'windows' %}{{ env.PROJECT_ROOT }}/.venv/Scripts/dv.exe{% else %}{{ env.PROJECT_ROOT }}/.venv/bin/dv{% endif %}"
+    },
+    "command": []
   }
 }
