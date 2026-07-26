@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
 use crate::fingerprint::FileFingerprint;
 use crate::util::atomic;
 
-pub const STATE_SCHEMA: u32 = 1;
+pub const STATE_SCHEMA: u32 = 2;
 pub const STATE_FILE: &str = "state.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,19 +33,27 @@ impl ResolvedAppExecutable {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BootstrapState {
     pub schema: u32,
     pub aqua_version: String,
-    #[serde(default)]
     pub aqua_sha256: String,
     pub aqua_executable: PathBuf,
     pub tracked_files: Vec<FileFingerprint>,
-    #[serde(default = "default_post_install_completed")]
     pub post_install_completed: bool,
-    #[serde(default)]
     pub bootstrapped_tools: BTreeMap<String, BootstrappedTool>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub resolved_app_executable: Option<ResolvedAppExecutable>,
+}
+
+fn deserialize_required_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
 }
 
 impl BootstrapState {
@@ -81,10 +89,6 @@ impl BootstrapState {
     }
 }
 
-fn default_post_install_completed() -> bool {
-    true
-}
-
 pub fn state_path(cache: &Path) -> PathBuf {
     cache.join(STATE_FILE)
 }
@@ -114,6 +118,7 @@ mod tests {
     use crate::fingerprint::FileFingerprint;
     use std::collections::BTreeMap;
 
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     #[test]
@@ -144,36 +149,64 @@ mod tests {
     }
 
     #[test]
-    fn legacy_state_without_post_install_completed_is_complete() {
-        let state: BootstrapState = serde_json::from_str(
-            r#"{
-              "schema": 1,
-              "aqua_version": "v2.59.2",
-              "aqua_executable": ".dv/aqua/bin/aqua",
-              "tracked_files": []
-            }"#,
-        )
-        .unwrap();
+    fn rejects_legacy_state_schema() {
+        let mut state: BootstrapState = serde_json::from_value(current_state_json()).unwrap();
+        state.schema = 1;
 
-        assert!(state.post_install_completed);
-        assert!(state.bootstrapped_tools.is_empty());
-        assert_eq!(state.resolved_app_executable, None);
+        let error = state.validate().unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported schema 1, expected 2")
+        );
     }
 
     #[test]
-    fn legacy_conflicting_app_fields_require_resolution() {
-        let state: BootstrapState = serde_json::from_str(
-            r#"{
-              "schema": 1,
-              "aqua_version": "v2.59.2",
-              "aqua_executable": ".dv/aqua/bin/aqua",
-              "tracked_files": [],
-              "app_executable": {"source": "aqua", "name": "uv"},
-              "app_tool": {"tool": "uv", "path": ".dv/aqua/bin/uv"}
-            }"#,
-        )
-        .unwrap();
+    fn rejects_state_missing_current_fields() {
+        for field in [
+            "aqua_sha256",
+            "post_install_completed",
+            "bootstrapped_tools",
+            "resolved_app_executable",
+        ] {
+            let mut state = current_state_json();
+            state.as_object_mut().unwrap().remove(field);
 
-        assert_eq!(state.resolved_app_executable, None);
+            let error = serde_json::from_value::<BootstrapState>(state).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing field `{field}`")),
+                "unexpected error for {field}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_legacy_state_fields() {
+        let mut state = current_state_json();
+        state.as_object_mut().unwrap().insert(
+            "app_tool".to_string(),
+            json!({"tool": "uv", "path": ".dv/aqua/bin/uv"}),
+        );
+
+        let error = serde_json::from_value::<BootstrapState>(state).unwrap_err();
+
+        assert!(error.to_string().contains("unknown field `app_tool`"));
+    }
+
+    fn current_state_json() -> Value {
+        json!({
+            "schema": 2,
+            "aqua_version": "v2.59.2",
+            "aqua_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "aqua_executable": ".dv/aqua/bin/aqua",
+            "tracked_files": [],
+            "post_install_completed": false,
+            "bootstrapped_tools": {},
+            "resolved_app_executable": null,
+        })
     }
 }

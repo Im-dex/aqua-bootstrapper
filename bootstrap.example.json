@@ -1,5 +1,5 @@
 {
-  "schema": 3,
+  "schema": 4,
   "aqua": {
     "version": "v2.60.1",
     "sha": {
@@ -15,7 +15,7 @@
     "{{ env.PROJECT_ROOT }}/aqua-checksums.json",
     "{{ env.PROJECT_ROOT }}/pyproject.toml",
     "{{ env.PROJECT_ROOT }}/uv.lock",
-    "{{ env.PROJECT_ROOT }}/config/**/*.toml"
+    "{{ env.PROJECT_ROOT }}/config/project.toml"
   ],
   "post_install": [
     {

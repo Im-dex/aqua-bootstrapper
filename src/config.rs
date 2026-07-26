@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-pub const CONFIG_SCHEMA: u32 = 3;
+pub const CONFIG_SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -61,8 +61,7 @@ pub enum AppExecutable {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppCommand {
-    #[serde(default)]
-    pub executable: Option<AppExecutable>,
+    pub executable: AppExecutable,
     pub command: Vec<String>,
 }
 
@@ -112,18 +111,13 @@ impl Config {
             require_non_empty(&format!("bootstrapped_tools.{env_name}"), tool)?;
         }
 
+        require_arguments("app.command", &self.app.command)?;
         match &self.app.executable {
-            None => require_command("app.command", &self.app.command)?,
-            Some(executable) => {
-                require_arguments("app.command", &self.app.command)?;
-                match executable {
-                    AppExecutable::Aqua { name } => {
-                        require_non_empty("app.executable.name", name)?;
-                    }
-                    AppExecutable::Path { path } => {
-                        require_absolute_path("app.executable.path", path)?;
-                    }
-                }
+            AppExecutable::Aqua { name } => {
+                require_non_empty("app.executable.name", name)?;
+            }
+            AppExecutable::Path { path } => {
+                require_absolute_path("app.executable.path", path)?;
             }
         }
         Ok(())
@@ -257,7 +251,7 @@ mod tests {
 
         let config = parse_config(
             r#"{
-                "schema": 3,
+                "schema": 4,
                 "aqua": {
                     "version": "v2.59.2",
                     "sha": {
@@ -268,10 +262,13 @@ mod tests {
                     "root": "{{ env.PROJECT_ROOT }}/.dv/aqua"
                 },
                 "bootstrap_cache": "{{ env.PROJECT_ROOT }}/.dv/bootstrap",
-                "tracked_files": ["{{ env.PROJECT_ROOT }}/aqua.yaml", "{{ env.PROJECT_ROOT }}/config/**/*.toml"],
+                "tracked_files": ["{{ env.PROJECT_ROOT }}/aqua.yaml", "{{ env.PROJECT_ROOT }}/config/project.toml"],
                 "post_install": [{"name": "sync", "command": ["uv", "sync", "--locked"]}],
                 "bootstrapped_tools": {"NODE_EXE": "node"},
-                "app": {"command": ["uv", "run", "dv"]}
+                "app": {
+                    "executable": {"source": "aqua", "name": "uv"},
+                    "command": ["run", "dv"]
+                }
             }"#,
             &envs,
         )
@@ -294,14 +291,19 @@ mod tests {
             config.tracked_files,
             [
                 std::path::PathBuf::from(format!("{project_root}/aqua.yaml")),
-                std::path::PathBuf::from(format!("{project_root}/config/**/*.toml")),
+                std::path::PathBuf::from(format!("{project_root}/config/project.toml")),
             ]
         );
         assert_eq!(
             config.bootstrapped_tools,
             [("NODE_EXE".to_string(), "node".to_string())].into()
         );
-        assert_eq!(config.app.executable, None);
+        assert_eq!(
+            config.app.executable,
+            AppExecutable::Aqua {
+                name: "uv".to_string()
+            }
+        );
     }
 
     #[test]
@@ -322,9 +324,9 @@ mod tests {
 
         assert_eq!(
             app.executable,
-            Some(AppExecutable::Path {
+            AppExecutable::Path {
                 path: executable.to_path_buf(),
-            })
+            }
         );
         assert_eq!(app.command, ["status"]);
     }
@@ -342,11 +344,21 @@ mod tests {
 
         assert_eq!(
             app.executable,
-            Some(AppExecutable::Aqua {
+            AppExecutable::Aqua {
                 name: "uv".to_string(),
-            })
+            }
         );
         assert_eq!(app.command, ["run", "dv"]);
+    }
+
+    #[test]
+    fn rejects_app_without_executable_selector() {
+        let error = serde_json::from_value::<AppCommand>(json!({
+            "command": ["uv", "run", "dv"],
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("missing field `executable`"));
     }
 
     #[test]
@@ -413,7 +425,7 @@ mod tests {
         };
         let config = format!(
             r#"{{
-                "schema": 3,
+                "schema": 4,
                 "aqua": {{
                     "version": "v2.59.2",
                     "sha": {{
@@ -426,7 +438,10 @@ mod tests {
                 "bootstrap_cache": "{project_root}/.dv/bootstrap",
                 "tracked_files": ["{project_root}/aqua.yaml"],
                 "bootstrapped_tools": {{"node_exe": "node"}},
-                "app": {{"command": ["uv", "run", "dv"]}}
+                "app": {{
+                    "executable": {{"source": "aqua", "name": "uv"}},
+                    "command": ["run", "dv"]
+                }}
             }}"#,
         );
         let error = parse_config(&config, &HashMap::new())
@@ -445,7 +460,7 @@ mod tests {
         };
         let config = format!(
             r#"{{
-                "schema": 3,
+                "schema": 4,
                 "aqua": {{
                     "version": "v2.59.2",
                     "sha": {{"windows": "not-a-digest", "linux": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
@@ -454,7 +469,10 @@ mod tests {
                 }},
                 "bootstrap_cache": "{project_root}/.dv/bootstrap",
                 "tracked_files": ["{project_root}/aqua.yaml"],
-                "app": {{"command": ["uv", "run", "dv"]}}
+                "app": {{
+                    "executable": {{"source": "aqua", "name": "uv"}},
+                    "command": ["run", "dv"]
+                }}
             }}"#,
         );
 
@@ -472,12 +490,15 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 3,
+                "schema": 4,
                 "aqua": aqua_config(&dir.path().join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [{"name": "sync", "command": ["uv", "sync", "--locked"]}],
-                "app": {"command": ["uv", "run", "dv"]}
+                "app": {
+                    "executable": {"source": "aqua", "name": "uv"},
+                    "command": ["run", "dv"]
+                }
             })
             .to_string(),
         )
@@ -485,7 +506,7 @@ mod tests {
 
         let parsed = Config::read(&path).unwrap();
 
-        assert_eq!(parsed.schema, 3);
+        assert_eq!(parsed.schema, 4);
         assert_eq!(parsed.aqua.version, "v2.59.2");
         assert_eq!(parsed.tracked_files.len(), 1);
     }
@@ -497,12 +518,15 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 3,
+                "schema": 4,
                 "aqua": aqua_config(Path::new("aqua.yaml"), Path::new("/tmp/project/.dv/aqua")),
                 "bootstrap_cache": "/tmp/project/.dv/bootstrap",
                 "tracked_files": ["/tmp/project/aqua.yaml"],
                 "post_install": [],
-                "app": {"command": ["uv", "run", "dv"]}
+                "app": {
+                    "executable": {"source": "aqua", "name": "uv"},
+                    "command": ["run", "dv"]
+                }
             })
             .to_string(),
         )
@@ -518,7 +542,7 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 3,
+                "schema": 4,
                 "aqua": aqua_config(
                     &dir.path().join("aqua.yaml"),
                     &dir.path().join(".dv/aqua"),
@@ -549,7 +573,7 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 3,
+                "schema": 4,
                 "aqua": aqua_config(
                     &dir.path().join("aqua.yaml"),
                     &dir.path().join(".dv/aqua"),
@@ -574,18 +598,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_legacy_schema_two_config() {
+    fn rejects_legacy_schema_three_config() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bootstrap.json");
         fs::write(
             &path,
             json!({
-                "schema": 2,
+                "schema": 3,
                 "aqua": aqua_config(&dir.path().join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [],
-                "app": {"command": ["uv", "run", "dv"]}
+                "app": {
+                    "executable": {"source": "aqua", "name": "uv"},
+                    "command": ["run", "dv"]
+                }
             })
             .to_string(),
         )
@@ -601,12 +628,15 @@ mod tests {
         fs::write(
             &path,
             json!({
-                "schema": 3,
+                "schema": 4,
                 "aqua": aqua_config(&dir.path().join("..").join("aqua.yaml"), &dir.path().join(".dv/aqua")),
                 "bootstrap_cache": json_path(&dir.path().join(".dv/bootstrap")),
                 "tracked_files": [json_path(&dir.path().join("aqua.yaml"))],
                 "post_install": [],
-                "app": {"command": ["uv", "run", "dv"]}
+                "app": {
+                    "executable": {"source": "aqua", "name": "uv"},
+                    "command": ["run", "dv"]
+                }
             })
             .to_string(),
         )

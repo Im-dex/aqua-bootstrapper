@@ -126,19 +126,6 @@ Absolute path selector:
 }
 ```
 
-Legacy Aqua selector:
-
-```json
-{
-  "app": {
-    "command": ["uv", "run", "dv"]
-  }
-}
-```
-
-For backward compatibility, omitting `app.executable` uses the first command
-element as an Aqua tool name and the remaining elements as its arguments.
-
 An absolute application path must not contain `.` or `..` components. Before it
 is saved in state, the bootstrapper verifies that it points to a regular file
 and, on Linux, that at least one executable permission bit is set. Windows has
@@ -158,7 +145,7 @@ such as `windows` or `linux`, and can be used in conditional blocks.
 
 ```json
 {
-  "schema": 3,
+  "schema": 4,
   "aqua": {
     "version": "v2.60.1",
     "sha": {
@@ -174,7 +161,7 @@ such as `windows` or `linux`, and can be used in conditional blocks.
     "{{ env.PROJECT_ROOT }}/aqua-checksums.json",
     "{{ env.PROJECT_ROOT }}/pyproject.toml",
     "{{ env.PROJECT_ROOT }}/uv.lock",
-    "{{ env.PROJECT_ROOT }}/config/**/*.toml"
+    "{{ env.PROJECT_ROOT }}/config/project.toml"
   ],
   "post_install": [
     {
@@ -221,6 +208,9 @@ on every bootstrap retry because Aqua tracks its own package cache freshness.
 The application is only launched after `post_install` has completed
 successfully.
 
+State schema 2 requires the complete current state shape. State written by
+earlier bootstrapper versions is not accepted.
+
 The state records the pinned Aqua SHA-256. Changing either `aqua.version` or
 the current platform's hash invalidates the cached binary.
 
@@ -234,14 +224,13 @@ Only metadata fingerprints are tracked:
 - modification time in nanoseconds since Unix epoch
 
 `tracked_files` entries must include every input that should invalidate the
-bootstrap state, must resolve to absolute paths, and may use glob patterns such
-as `{{ env.PROJECT_ROOT }}/config/**/*.toml`. Glob patterns must match at least one
-file. Matched files are sorted and deduplicated before they are stored in state.
+bootstrap state. Each entry must resolve to the absolute path of one existing
+regular file. Wildcard characters have no special meaning. Tracked files are
+sorted and deduplicated before they are stored in state.
 The `bootstrapped_tools` mapping is also compared with state so changing an
 environment-variable name or tool name refreshes the cached path. Changing the
-legacy first element of `app.command` or the explicit `app.executable` selector
-also refreshes the cached executable path. A missing absolute application
-executable invalidates the cached state as well.
+`app.executable` selector also refreshes the cached executable path. A missing
+absolute application executable invalidates the cached state as well.
 
 The resolved application executable is stored as one tagged state value:
 `aqua` contains the Aqua tool name and resolved path, while `path` contains the

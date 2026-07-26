@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use glob::{Pattern, glob};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -15,19 +14,12 @@ pub struct FileFingerprint {
     pub mtime_ns: u128,
 }
 
-pub fn fingerprint_tracked_patterns(
-    root: &Path,
-    patterns: &[PathBuf],
-) -> Result<Vec<FileFingerprint>> {
+pub fn fingerprint_tracked_files(root: &Path, paths: &[PathBuf]) -> Result<Vec<FileFingerprint>> {
     let mut fingerprints = BTreeMap::new();
 
-    for pattern in patterns {
-        if is_glob_pattern(pattern) {
-            expand_glob_pattern(root, pattern, &mut fingerprints)?;
-        } else {
-            let fingerprint = fingerprint_tracked(root, pattern)?;
-            fingerprints.insert(fingerprint.path.clone(), fingerprint);
-        }
+    for path in paths {
+        let fingerprint = fingerprint_tracked(root, path)?;
+        fingerprints.insert(fingerprint.path.clone(), fingerprint);
     }
 
     Ok(fingerprints.into_values().collect())
@@ -59,55 +51,6 @@ fn fingerprint_from_metadata(path: PathBuf, metadata: &fs::Metadata) -> Result<F
     })
 }
 
-fn expand_glob_pattern(
-    root: &Path,
-    pattern: &Path,
-    fingerprints: &mut BTreeMap<PathBuf, FileFingerprint>,
-) -> Result<()> {
-    require_absolute_tracked_path(pattern)?;
-
-    let pattern_str = glob_pattern(root, pattern)?;
-
-    let mut matched_files = 0;
-    for entry in glob(&pattern_str).map_err(|error| {
-        Error::InvalidConfig(format!("invalid tracked_files glob pattern: {error}"))
-    })? {
-        let absolute = entry.map_err(|error| {
-            Error::InvalidConfig(format!(
-                "tracked_files glob pattern failed for {}: {error}",
-                pattern.display()
-            ))
-        })?;
-        let state_path = state_path(root, &absolute);
-        if fingerprints.contains_key(&state_path) {
-            matched_files += 1;
-            continue;
-        }
-
-        let metadata = fs::metadata(&absolute).map_err(|source| Error::TrackedFile {
-            path: state_path.clone(),
-            source,
-        })?;
-
-        if !metadata.is_file() {
-            continue;
-        }
-
-        let fingerprint = fingerprint_from_metadata(state_path, &metadata)?;
-        fingerprints.insert(fingerprint.path.clone(), fingerprint);
-        matched_files += 1;
-    }
-
-    if matched_files == 0 {
-        return Err(Error::InvalidConfig(format!(
-            "tracked_files glob pattern matched no files: {}",
-            pattern.display()
-        )));
-    }
-
-    Ok(())
-}
-
 fn state_path(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
@@ -127,46 +70,6 @@ fn require_absolute_tracked_path(path: &Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn glob_pattern(root: &Path, pattern: &Path) -> Result<String> {
-    if let Ok(relative) = pattern.strip_prefix(root) {
-        let root = root.to_str().ok_or_else(|| {
-            Error::InvalidConfig("tracked_files root path is not valid UTF-8".to_string())
-        })?;
-        let relative = relative.to_str().ok_or_else(|| {
-            Error::InvalidConfig(format!(
-                "tracked_files glob pattern is not valid UTF-8: {}",
-                pattern.display()
-            ))
-        })?;
-
-        if relative.is_empty() {
-            return Ok(Pattern::escape(root));
-        }
-
-        return Ok(format!(
-            "{}{}{}",
-            Pattern::escape(root),
-            std::path::MAIN_SEPARATOR,
-            relative
-        ));
-    }
-
-    let pattern = pattern.to_str().ok_or_else(|| {
-        Error::InvalidConfig(format!(
-            "tracked_files glob pattern is not valid UTF-8: {}",
-            pattern.display()
-        ))
-    })?;
-
-    Ok(pattern.to_string())
-}
-
-fn is_glob_pattern(path: &Path) -> bool {
-    path.to_string_lossy()
-        .chars()
-        .any(|character| matches!(character, '*' | '?' | '['))
 }
 
 pub fn executable_exists(path: &Path) -> Result<bool> {
@@ -190,7 +93,7 @@ fn mtime_ns(metadata: &fs::Metadata) -> Result<u128> {
 
 #[cfg(test)]
 mod tests {
-    use super::fingerprint_tracked_patterns;
+    use super::fingerprint_tracked_files;
     use std::fs;
 
     use tempfile::tempdir;
@@ -201,84 +104,52 @@ mod tests {
         let aqua_config = dir.path().join("aqua.yaml");
         fs::write(&aqua_config, "registries: []").unwrap();
 
-        let fingerprints = fingerprint_tracked_patterns(dir.path(), &[aqua_config]).unwrap();
+        let fingerprints = fingerprint_tracked_files(dir.path(), &[aqua_config]).unwrap();
 
         assert_eq!(fingerprints.len(), 1);
         assert_eq!(fingerprints[0].path, std::path::PathBuf::from("aqua.yaml"));
     }
 
     #[test]
-    fn expands_glob_patterns_recursively() {
+    fn deduplicates_tracked_files() {
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("config/nested")).unwrap();
-        fs::write(dir.path().join("config/a.toml"), "").unwrap();
-        fs::write(dir.path().join("config/nested/b.toml"), "").unwrap();
-        fs::write(dir.path().join("config/nested/ignored.txt"), "").unwrap();
+        let config = dir.path().join("config.toml");
+        fs::write(&config, "").unwrap();
 
         let fingerprints =
-            fingerprint_tracked_patterns(dir.path(), &[dir.path().join("config/**/*.toml")])
-                .unwrap();
-        let paths = fingerprints
-            .into_iter()
-            .map(|fingerprint| fingerprint.path)
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            paths,
-            vec![
-                std::path::PathBuf::from("config/a.toml"),
-                std::path::PathBuf::from("config/nested/b.toml"),
-            ]
-        );
-    }
-
-    #[test]
-    fn deduplicates_files_matched_by_multiple_patterns() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("config")).unwrap();
-        fs::write(dir.path().join("config/a.toml"), "").unwrap();
-
-        let fingerprints = fingerprint_tracked_patterns(
-            dir.path(),
-            &[
-                dir.path().join("config/a.toml"),
-                dir.path().join("config/**/*.toml"),
-            ],
-        )
-        .unwrap();
+            fingerprint_tracked_files(dir.path(), &[config.clone(), config]).unwrap();
 
         assert_eq!(fingerprints.len(), 1);
         assert_eq!(
             fingerprints[0].path,
-            std::path::PathBuf::from("config/a.toml")
+            std::path::PathBuf::from("config.toml")
         );
     }
 
     #[test]
-    fn rejects_empty_glob_patterns() {
+    fn treats_glob_metacharacters_as_literal_path() {
         let dir = tempdir().unwrap();
+        let config = dir.path().join("config[1].toml");
+        fs::write(&config, "").unwrap();
+
+        let fingerprints = fingerprint_tracked_files(dir.path(), &[config]).unwrap();
+
+        assert_eq!(fingerprints.len(), 1);
+        assert_eq!(
+            fingerprints[0].path,
+            std::path::PathBuf::from("config[1].toml")
+        );
+    }
+
+    #[test]
+    fn does_not_expand_glob_patterns() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("config.toml"), "").unwrap();
+        let pattern = dir.path().join("*.toml");
 
         let error =
-            fingerprint_tracked_patterns(dir.path(), &[dir.path().join("missing/**/*.toml")])
-                .unwrap_err();
+            fingerprint_tracked_files(dir.path(), std::slice::from_ref(&pattern)).unwrap_err();
 
-        assert!(error.to_string().contains("matched no files"));
-    }
-
-    #[test]
-    fn treats_glob_characters_in_root_as_literals() {
-        let dir = tempdir().unwrap();
-        let root = dir.path().join("[project]");
-        fs::create_dir_all(root.join("config")).unwrap();
-        fs::write(root.join("config/a.toml"), "").unwrap();
-
-        let fingerprints =
-            fingerprint_tracked_patterns(&root, &[root.join("config/**/*.toml")]).unwrap();
-
-        assert_eq!(fingerprints.len(), 1);
-        assert_eq!(
-            fingerprints[0].path,
-            std::path::PathBuf::from("config/a.toml")
-        );
+        assert!(matches!(error, crate::error::Error::TrackedFile { path, .. } if path == pattern));
     }
 }

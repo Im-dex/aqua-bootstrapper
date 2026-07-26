@@ -143,11 +143,7 @@ impl Bootstrapper {
     }
 
     fn app_command_args(&self) -> Vec<String> {
-        let mut args = if self.config.app.executable.is_some() {
-            self.config.app.command.clone()
-        } else {
-            self.config.app.command[1..].to_vec()
-        };
+        let mut args = self.config.app.command.clone();
         args.extend(self.app_args.iter().cloned());
         args
     }
@@ -179,21 +175,23 @@ impl Bootstrapper {
         &self,
         aqua_executable: &Path,
     ) -> Result<ResolvedAppExecutable> {
-        let executable = self.app_executable();
-        match executable {
+        match &self.config.app.executable {
             AppExecutable::Aqua { name } => {
                 let path = aqua::exec::resolve_tool(
                     aqua_executable,
                     &self.aqua_config(),
                     &self.aqua_root(),
-                    &name,
+                    name,
                 )
                 .await?;
-                Ok(ResolvedAppExecutable::Aqua { name, path })
+                Ok(ResolvedAppExecutable::Aqua {
+                    name: name.clone(),
+                    path,
+                })
             }
             AppExecutable::Path { path } => {
-                validate_application_executable(&path)?;
-                Ok(ResolvedAppExecutable::Path { path })
+                validate_application_executable(path)?;
+                Ok(ResolvedAppExecutable::Path { path: path.clone() })
             }
         }
     }
@@ -235,7 +233,7 @@ impl Bootstrapper {
 
         let state_task = tokio::task::spawn_blocking(move || state::read(&cache));
         let tracked_task = tokio::task::spawn_blocking(move || {
-            fingerprint::fingerprint_tracked_patterns(&root, &tracked_paths)
+            fingerprint::fingerprint_tracked_files(&root, &tracked_paths)
         });
         let executable_task =
             tokio::task::spawn_blocking(move || fingerprint::executable_exists(&aqua_executable));
@@ -288,7 +286,7 @@ impl Bootstrapper {
 
     fn app_executable_matches(&self, state: &BootstrapState) -> bool {
         match (
-            self.app_executable(),
+            &self.config.app.executable,
             state.resolved_app_executable.as_ref(),
         ) {
             (
@@ -297,25 +295,15 @@ impl Bootstrapper {
                     name: resolved_name,
                     ..
                 }),
-            ) => name == *resolved_name,
+            ) => name == resolved_name,
             (
                 AppExecutable::Path { path },
                 Some(ResolvedAppExecutable::Path {
                     path: resolved_path,
                 }),
-            ) => path == *resolved_path && validate_application_executable(&path).is_ok(),
+            ) => path == resolved_path && validate_application_executable(path).is_ok(),
             _ => false,
         }
-    }
-
-    fn app_executable(&self) -> AppExecutable {
-        self.config
-            .app
-            .executable
-            .clone()
-            .unwrap_or_else(|| AppExecutable::Aqua {
-                name: self.config.app.command[0].clone(),
-            })
     }
 
     fn aqua_config(&self) -> PathBuf {
@@ -450,9 +438,12 @@ mod tests {
     #[test]
     fn full_bootstrap_state_requires_current_app_executable() {
         let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.command[0] = "uvx".to_string();
+        let state = state(&bootstrapper, vec![fingerprint("aqua.yaml", 1)]);
+        bootstrapper.config.app.executable = AppExecutable::Aqua {
+            name: "uvx".to_string(),
+        };
         let snapshot = Snapshot {
-            state: Some(state(&bootstrapper, vec![fingerprint("aqua.yaml", 1)])),
+            state: Some(state),
             tracked_files: vec![fingerprint("aqua.yaml", 1)],
             aqua_executable_exists: true,
         };
@@ -461,43 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_explicit_aqua_selector_reuses_resolved_executable() {
+    fn app_command_keeps_entire_command_as_arguments() {
         let mut bootstrapper = bootstrapper();
-        let state = state(&bootstrapper, vec![fingerprint("aqua.yaml", 1)]);
-        bootstrapper.config.app.executable = Some(AppExecutable::Aqua {
-            name: "aqua".to_string(),
-        });
-        bootstrapper.config.app.command = vec!["--version".to_string()];
-        let snapshot = Snapshot {
-            state: Some(state),
-            tracked_files: vec![fingerprint("aqua.yaml", 1)],
-            aqua_executable_exists: true,
-        };
-
-        assert!(bootstrapper.is_valid(&snapshot));
-    }
-
-    #[test]
-    fn legacy_app_command_uses_first_element_as_aqua_executable() {
-        let mut bootstrapper = bootstrapper();
-        bootstrapper.app_args = vec!["status".to_string()];
-
-        assert_eq!(
-            bootstrapper.app_executable(),
-            AppExecutable::Aqua {
-                name: "aqua".to_string()
-            }
-        );
-        assert_eq!(bootstrapper.app_command_args(), ["--version", "status"]);
-    }
-
-    #[test]
-    fn explicit_app_executable_keeps_entire_command_as_arguments() {
-        let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.executable = Some(AppExecutable::Aqua {
-            name: "aqua".to_string(),
-        });
-        bootstrapper.config.app.command = vec!["--version".to_string()];
         bootstrapper.app_args = vec!["status".to_string()];
 
         assert_eq!(bootstrapper.app_command_args(), ["--version", "status"]);
@@ -509,9 +465,9 @@ mod tests {
         let executable = temp.path().join(executable_filename("dv"));
         write_executable(&executable);
         let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+        bootstrapper.config.app.executable = AppExecutable::Path {
             path: executable.clone(),
-        });
+        };
         bootstrapper.config.app.command.clear();
 
         let resolved = bootstrapper
@@ -527,9 +483,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("missing");
         let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+        bootstrapper.config.app.executable = AppExecutable::Path {
             path: executable.clone(),
-        });
+        };
         bootstrapper.config.app.command.clear();
 
         let error = bootstrapper
@@ -550,9 +506,9 @@ mod tests {
         let executable = temp.path().join("directory");
         std::fs::create_dir(&executable).unwrap();
         let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+        bootstrapper.config.app.executable = AppExecutable::Path {
             path: executable.clone(),
-        });
+        };
         bootstrapper.config.app.command.clear();
 
         let error = bootstrapper
@@ -576,9 +532,9 @@ mod tests {
         std::fs::write(&executable, []).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+        bootstrapper.config.app.executable = AppExecutable::Path {
             path: executable.clone(),
-        });
+        };
         bootstrapper.config.app.command.clear();
 
         let error = bootstrapper
@@ -598,9 +554,9 @@ mod tests {
         let executable = temp.path().join(executable_filename("dv"));
         write_executable(&executable);
         let mut bootstrapper = bootstrapper();
-        bootstrapper.config.app.executable = Some(AppExecutable::Path {
+        bootstrapper.config.app.executable = AppExecutable::Path {
             path: executable.clone(),
-        });
+        };
         bootstrapper.config.app.command.clear();
         let tracked_files = vec![fingerprint("aqua.yaml", 1)];
         let mut state = state(&bootstrapper, tracked_files.clone());
@@ -621,11 +577,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_state_without_checksum_requires_aqua_redownload() {
+    fn state_with_different_checksum_requires_aqua_redownload() {
         let bootstrapper = bootstrapper();
         let tracked_files = vec![fingerprint("aqua.yaml", 1)];
         let mut state = state(&bootstrapper, tracked_files.clone());
-        state.aqua_sha256.clear();
+        state.aqua_sha256 =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
         let snapshot = Snapshot {
             state: Some(state),
             tracked_files,
@@ -682,7 +639,7 @@ mod tests {
         Bootstrapper::new(
             root.clone(),
             Config {
-                schema: 3,
+                schema: 4,
                 aqua: AquaConfig {
                     version: "v2.59.2".to_string(),
                     sha: AquaSha {
@@ -699,8 +656,10 @@ mod tests {
                 post_install: vec![],
                 bootstrapped_tools: BTreeMap::new(),
                 app: AppCommand {
-                    executable: None,
-                    command: vec!["aqua".to_string(), "--version".to_string()],
+                    executable: AppExecutable::Aqua {
+                        name: "aqua".to_string(),
+                    },
+                    command: vec!["--version".to_string()],
                 },
             },
             vec![],

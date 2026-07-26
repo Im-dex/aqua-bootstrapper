@@ -1,13 +1,12 @@
 [package]
 name = "aqua-bootstrapper"
-version = "1.5.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.96.1"
 license = "MIT"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
-glob = "0.3.3"
 hex = "0.4.3"
 minijinja = { version = "2.21.0", default-features = false, features = ["serde"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls"] }
