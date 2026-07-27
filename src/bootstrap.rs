@@ -90,7 +90,7 @@ impl Bootstrapper {
         for command in &self.config.post_install {
             let aqua_config = self.aqua_config();
             let envs = aqua::exec::aqua_envs(&aqua_executable, &aqua_config, &aqua_root);
-            let args = aqua::exec::exec_args(&command.command);
+            let args = aqua::exec::post_install_args(&command.command);
             crate::process::run_foreground(&command.name, &aqua_executable, &args, Some(&envs))
                 .await?;
         }

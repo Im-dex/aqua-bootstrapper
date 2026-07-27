@@ -19,6 +19,13 @@
   ],
   "post_install": [
     {
+      "name": "Aqua version",
+      "command": [
+        "aqua",
+        "-v"
+      ]
+    },
+    {
       "name": "Python environment",
       "command": [
         "uv",

@@ -13,6 +13,13 @@ pub fn exec_args(command: &[String]) -> Vec<String> {
     args
 }
 
+pub fn post_install_args(command: &[String]) -> Vec<String> {
+    match command.split_first() {
+        Some((executable, args)) if executable == "aqua" => args.to_vec(),
+        _ => exec_args(command),
+    }
+}
+
 pub fn which_args(tool: &str) -> Vec<String> {
     vec!["which".to_string(), tool.to_string()]
 }
@@ -66,7 +73,7 @@ pub async fn resolve_tool(
 
 #[cfg(test)]
 mod tests {
-    use super::{exec_args, install_args, which_args};
+    use super::{exec_args, install_args, post_install_args, which_args};
 
     #[test]
     fn install_args_install_all_configured_packages() {
@@ -78,6 +85,22 @@ mod tests {
         assert_eq!(
             exec_args(&["uv".to_string(), "sync".to_string()]),
             ["exec", "--", "uv", "sync"]
+        );
+    }
+
+    #[test]
+    fn post_install_args_pass_managed_tool_through_aqua_exec() {
+        assert_eq!(
+            post_install_args(&["uv".to_string(), "sync".to_string()]),
+            ["exec", "--", "uv", "sync"]
+        );
+    }
+
+    #[test]
+    fn post_install_args_run_aqua_directly() {
+        assert_eq!(
+            post_install_args(&["aqua".to_string(), "-v".to_string()]),
+            ["-v"]
         );
     }
 

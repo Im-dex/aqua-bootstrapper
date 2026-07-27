@@ -113,6 +113,12 @@ underscores. After `aqua install`, the bootstrapper resolves every tool with
 absolute path. For example, `"NODE_EXE": "node"` sets
 `BOOTSTRAPPED_NODE_EXE`.
 
+Post-install commands run Aqua-managed tools through `aqua exec`. A command
+whose first element is the literal `"aqua"` instead runs the managed Aqua
+executable itself and passes the remaining elements as its arguments. For
+example, `["aqua", "-v"]` runs `aqua -v` with the configured Aqua root and
+config.
+
 `app.executable` selects and names the executable:
 
 - `{"source": "aqua", "name": "<tool>"}` resolves the named tool with
